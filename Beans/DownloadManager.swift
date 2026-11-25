@@ -156,11 +156,20 @@ final class DownloadManager {
     }
 
     private func resolveURL(song: Song, quality: DownloadQuality) async -> ResolvedDownloadURL? {
-        // DJ多多：Path 解密 + CDN 拼接，不走第三方音源匹配
-        if song.source == .djduoduo,
-           let s = DJduoduoAPI.shared.downloadURL(song: song),
-           let url = URL(string: s) {
-            return ResolvedDownloadURL(url: url, actualQuality: quality, sourceName: nil)
+        // ★ DJ多多：按 act=formats 的四档（游客态 Uid=-1）解析
+        //   路径前缀 dj / dj_nq / dj_hq / dj_sq（反汇编 0x100064808）
+        if song.source == .djduoduo {
+            let formats = (try? await DJduoduoAPI.shared.formats(song: song)) ?? []
+            guard !formats.isEmpty else { return nil }
+            let wanted = DJduoduoAPI.djQuality(for: quality)
+            let picked = formats.first { $0.quality == wanted }
+                ?? formats.filter { $0.quality <= wanted }.max { $0.quality < $1.quality }
+                ?? formats.min { $0.quality < $1.quality }
+            guard let picked,
+                  let s = DJduoduoAPI.shared.downloadURL(format: picked, song: song),
+                  let url = URL(string: s) else { return nil }
+            let actual: DownloadQuality = DJduoduoAPI.downloadQuality(forDJQuality: picked.quality)
+            return ResolvedDownloadURL(url: url, actualQuality: actual, sourceName: nil)
         }
         // 下载优先复用已配置的第三方音源，避免播放能用第三方而下载仍走官方地址。
         let thirdPartyID = song.source == .netease ? song.id : 0
