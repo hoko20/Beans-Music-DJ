@@ -169,6 +169,25 @@ struct DJddFormat: Identifiable, Hashable {
         default: return "档位\(quality)"
         }
     }
+
+    /// ★ CDN 路径前缀（反汇编 0x100064808 的 initWithObjects: 四元素数组）
+    ///   0 dj / 1 dj_nq / 2 dj_hq / 3 dj_sq
+    /// URL 模板 0x100065834: "%@/%@/%03d/%@" = host / 前缀 / (Id%1000) / 文件名
+    var pathPrefix: String {
+        switch quality {
+        case 0: return "dj"
+        case 1: return "dj_nq"
+        case 2: return "dj_hq"
+        case 3: return "dj_sq"
+        default: return "dj"
+        }
+    }
+
+    /// 扩展名（由解密出的文件名决定）：aac / mp3 / flac
+    var fileExtension: String {
+        let ext = (fileName as NSString).pathExtension
+        return ext.isEmpty ? "m4a" : ext
+    }
 }
 
 // MARK: - DJ多多 API 单例
@@ -318,9 +337,10 @@ final class DJduoduoAPI {
         return "\(cdnHost)/dj/\(String(format: "%03d", songID % 1000))/\(fileName)"
     }
 
-    /// 音质档位（反汇编 0x1000a9e10：四参数缺一不可，否则 401）
-    /// Uid/OpenId 来自 App 登录态；未登录时服务端返回 RetCode=401。
-    func formats(song: Song, uid: Int = 0, openId: String = "",
+    /// 音质档位（反汇编 0x1000a9e10：四参数缺一不可）
+    /// ★★ Uid=-1 即游客态（2026-11-25 实测 RetCode=200，四档全返回）；
+    ///    Uid=0 会被服务端判无效 → 401。故未登录也能拿全档位。
+    func formats(song: Song, uid: Int = -1, openId: String = "",
                  status: Int = 0) async throws -> [DJddFormat] {
         let json = try await request("formats", params: [
             "Id": song.id,
@@ -328,7 +348,9 @@ final class DJduoduoAPI {
             "OpenId": openId,
             "Status": status,
         ])
-        let items = json["Formats"] as? [[String: Any]] ?? []
+        // 响应结构：{ "Item": { "Id": ..., "Formats": [...] } }
+        let item = json["Item"] as? [String: Any] ?? json
+        let items = item["Formats"] as? [[String: Any]] ?? []
         return items.map { d in
             DJddFormat(
                 quality: (d["Quality"] as? NSNumber)?.intValue ?? 0,
@@ -340,10 +362,13 @@ final class DJduoduoAPI {
     }
 
     /// 指定档位的下载地址
+    /// ★ 模板 "%@/%@/%03d/%@"（0x100065834）：
+    ///     host / format.pathPrefix / (Id % 1000) / 解密文件名
+    ///   实测 Q0 dj/ Q1 dj_nq/ Q2 dj_hq/ Q3 dj_sq/
     func downloadURL(format: DJddFormat, song: Song) -> String? {
         let fileName = format.fileName
         guard !fileName.isEmpty else { return nil }
-        return "\(cdnHost)/dj/\(String(format: "%03d", song.id % 1000))/\(fileName)"
+        return "\(cdnHost)/\(format.pathPrefix)/\(String(format: "%03d", song.id % 1000))/\(fileName)"
     }
 
     private func coverURL(songId: Int, userId: Int, cover: String) -> URL? {
@@ -377,4 +402,28 @@ final class DJduoduoAPI {
 
     /// 歌词：服务端是独立密钥链路，已停止分析；返回空串交给 Beans 的 LyricParser
     func lyric(song: Song) -> String { "" }
+
+    // MARK: - 音质映射（DJdd 档位 0-3 ↔ Beans DownloadQuality）
+
+    /// Beans 下载音质 → DJdd Quality 档位
+    /// 0 流畅 / 1 标准 / 2 高品 / 3 无损
+    static func djQuality(for quality: DownloadQuality) -> Int {
+        switch quality {
+        case .kb128: return 1        // 标准 128k
+        case .kb320: return 2        // 高品 320k
+        case .flac, .flac24bit, .hires, .atmos, .atmosPlus, .master: return 3  // 无损
+        default: return 0
+        }
+    }
+
+    /// DJdd Quality 档位 → Beans 下载音质（用于展示实际下载到的档位）
+    static func downloadQuality(forDJQuality quality: Int) -> DownloadQuality {
+        switch quality {
+        case 0: return .kb128
+        case 1: return .kb128
+        case 2: return .kb320
+        case 3: return .flac
+        default: return .kb128
+        }
+    }
 }

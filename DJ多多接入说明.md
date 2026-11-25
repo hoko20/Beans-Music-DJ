@@ -6,7 +6,7 @@ SwiftUI 液态玻璃 UI、播放器、下载、歌词、收藏、队列等能力
 
 - 仓库：https://github.com/hoko20/Beans-Music-DJ
 - 构建产物：`Beans-unsigned.ipa`（未签名，需 AltStore / Sideloadly / 爱思自签安装）
-- 编译状态：GitHub Actions `macos-26` 已构建通过（run 45559370460）
+- 编译状态：GitHub Actions `macos-26` 已构建通过（最新 run 45567210062，含 15 分类）
 
 ---
 
@@ -49,11 +49,14 @@ DJdd CDN 是 `http://bdcdn.djduoduo.com`，可直接播放/下载。
       不带 type / type="ring"                      → 彩铃 tab 仅 3 项（112/115/116）
 列表  act=<分类Act> data={"PageNo":p,"Id":分类Id}  → RetCode=200 Count=30
       最热/最新/无损专区 id=0 → 只传 act=hot/new/sq，不带 Id
-音质  act=formats   data={"Id":歌曲Id,"Uid":登录Uid,
-                          "OpenId":登录OpenId,"Status":状态}
-      响应 Formats[]：Quality / Size / Bitrate / Path(加密，同媒体 key)
-      档位 0 流畅 / 1 标准 / 2 高品 / 3 无损；MaxQ = 可用档位数
-下载  CDN/dj/{Id%1000补3位}/{Path解密文件名}      → 206 + ftyp mp42
+音质  act=formats   data={"Id":歌曲Id,"Uid":Uid,
+                          "OpenId":OpenId,"Status":状态}
+      ★ Uid=-1 即游客态 → RetCode=200 四档全返回（无需登录）
+      响应 Item.Formats[]：Quality / Size / Bitrate / Path(加密，同媒体 key)
+      档位 0 流畅 / 1 标准 / 2 高品 / 3 无损
+下载  CDN/{Quality前缀}/{Id%1000补3位}/{Path解密文件名}
+      前缀 0→dj  1→dj_nq  2→dj_hq  3→dj_sq
+      实测 高品 …/dj_hq/192/jhyps3.mp3 → 200，52.1MB，320k/48kHz
 封面  CDN/v/cover/{Id%1000补3位}/{UserId}/{Cover}
 
 AES   AES-128-CBC + PKCS7
@@ -66,9 +69,10 @@ AES   AES-128-CBC + PKCS7
 ### 已知限制
 
 - **搜索**：服务端 `act=search` 参数未破解，用前 4 个分类列表本地过滤兜底。
-- **音质选择**：`formats` 协议已按反汇编完整实现（`DJduoduoAPI.formats()`），
-  但 `Uid/OpenId` 来自 App 登录态，未登录直连一律返回 `RetCode=401`，
-  因此尚未接入下载/播放器的档位切换 UI；登录态拿到后即可启用。
+- **音质选择**：✅ 已完全打通。`DJduoduoAPI.formats()` 用游客态 `Uid=-1` 取四档，
+  `downloadURL(format:song:)` 按 Quality 前缀目录拼地址，`DownloadManager` 的 DJdd 分支
+  已按请求音质映射档位并自动降级。逆向证据见
+  `../DJdd的API接口算法/08_文档/12_formats登录态与三档音质.md`。
 - **歌词**：服务端 `act=lyric` 是独立第五套密钥，已按需求停止分析；Beans 自带本地 LRC 解析能力保留，DJdd 歌曲无在线歌词。
 - **排行榜 / 云端歌单**：DJdd 无对应接口，相关区域显示为空或本地红心。
 - **收藏**：本地持久化（`beans.fav.djduoduo.v1`），无云端同步。
