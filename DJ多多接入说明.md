@@ -13,7 +13,7 @@ SwiftUI 液态玻璃 UI、播放器、下载、歌词、收藏、队列等能力
 ## 怎么用
 
 1. 发现页 / 搜索页顶部的平台选择器，切换到「DJ多多」（橙红渐变 + 波形图标）。
-2. 发现页直接加载三分类（最热 112 / 最新 115 / 彩铃 116）的合并推荐流。
+2. 发现页切到 DJ多多后，顶部出现 15 个分类横向选择器（最热/最新/电音/无损专区/车载/粤语/彩铃/儿歌/中文/外文/伤感/3D/DJ/铃声/老歌），点选即切换列表。
 3. 搜索页支持歌曲名 / 作者本地过滤（服务端 search act 参数未破解）。
 4. 点歌曲进入 Beans 原生播放页，支持播放/暂停、上一首下一首、进度拖动、后台播放、歌词面板。
 5. 下载、红心收藏均可正常使用，收藏本地持久化（无云端接口）。
@@ -45,8 +45,14 @@ DJdd CDN 是 `http://bdcdn.djduoduo.com`，可直接播放/下载。
 基址  https://api.dianyinduoduo.com/v4/getlist.php
 参数  ?act=<动作>&data=<base64(AES)>&extra=<base64(AES)>
 
-分类  act=listtab   data={"PageNo":0}           → 112 最热 / 115 最新 / 116 彩铃
-列表  act=homechn   data={"PageNo":p,"Id":分类Id} → RetCode=200 Count=30
+分类  act=listtab   data={"PageNo":0,"type":"home"} → 首页 15 项
+      不带 type / type="ring"                      → 彩铃 tab 仅 3 项（112/115/116）
+列表  act=<分类Act> data={"PageNo":p,"Id":分类Id}  → RetCode=200 Count=30
+      最热/最新/无损专区 id=0 → 只传 act=hot/new/sq，不带 Id
+音质  act=formats   data={"Id":歌曲Id,"Uid":登录Uid,
+                          "OpenId":登录OpenId,"Status":状态}
+      响应 Formats[]：Quality / Size / Bitrate / Path(加密，同媒体 key)
+      档位 0 流畅 / 1 标准 / 2 高品 / 3 无损；MaxQ = 可用档位数
 下载  CDN/dj/{Id%1000补3位}/{Path解密文件名}      → 206 + ftyp mp42
 封面  CDN/v/cover/{Id%1000补3位}/{UserId}/{Cover}
 
@@ -59,7 +65,10 @@ AES   AES-128-CBC + PKCS7
 
 ### 已知限制
 
-- **搜索**：服务端 `act=search` 参数未破解，用三分类列表本地过滤兜底。
+- **搜索**：服务端 `act=search` 参数未破解，用前 4 个分类列表本地过滤兜底。
+- **音质选择**：`formats` 协议已按反汇编完整实现（`DJduoduoAPI.formats()`），
+  但 `Uid/OpenId` 来自 App 登录态，未登录直连一律返回 `RetCode=401`，
+  因此尚未接入下载/播放器的档位切换 UI；登录态拿到后即可启用。
 - **歌词**：服务端 `act=lyric` 是独立第五套密钥，已按需求停止分析；Beans 自带本地 LRC 解析能力保留，DJdd 歌曲无在线歌词。
 - **排行榜 / 云端歌单**：DJdd 无对应接口，相关区域显示为空或本地红心。
 - **收藏**：本地持久化（`beans.fav.djduoduo.v1`），无云端同步。
