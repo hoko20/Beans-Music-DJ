@@ -128,11 +128,47 @@ struct DJddCategory: Identifiable, Hashable {
 
     var identifier: String { "\(id)" }
 
+    /// 实测 15 项（act=listtab, data={"PageNo":0,"type":"home"}）
+    /// id=0 的项不带 Id，直接用 act 拉列表。
     static let fallback: [DJddCategory] = [
-        DJddCategory(id: 112, name: "最热", act: "homechn"),
-        DJddCategory(id: 115, name: "最新", act: "homechn"),
-        DJddCategory(id: 116, name: "彩铃", act: "homechn"),
+        DJddCategory(id: 0,   name: "最热",     act: "hot"),
+        DJddCategory(id: 0,   name: "最新",     act: "new"),
+        DJddCategory(id: 105, name: "电音",     act: "homechn"),
+        DJddCategory(id: 0,   name: "无损专区", act: "sq"),
+        DJddCategory(id: 104, name: "车载",     act: "homechn"),
+        DJddCategory(id: 114, name: "粤语",     act: "homechn"),
+        DJddCategory(id: 112, name: "彩铃",     act: "homechn"),
+        DJddCategory(id: 113, name: "儿歌",     act: "homechn"),
+        DJddCategory(id: 107, name: "中文",     act: "homechn"),
+        DJddCategory(id: 110, name: "外文",     act: "homechn"),
+        DJddCategory(id: 103, name: "伤感",     act: "homechn"),
+        DJddCategory(id: 100, name: "3D",       act: "homechn"),
+        DJddCategory(id: 101, name: "DJ",       act: "homechn"),
+        DJddCategory(id: 115, name: "铃声",     act: "homechn"),
+        DJddCategory(id: 108, name: "老歌",     act: "homechn"),
     ]
+}
+
+/// 一个音质档位（act=formats 响应 Formats[] 的一项）
+/// 反汇编 0x10006947c：Quality / Size / Bitrate / Path（加密，同媒体 key）
+struct DJddFormat: Identifiable, Hashable {
+    let quality: Int
+    let size: Int
+    let bitrate: Int
+    let path: String
+    var fileName: String { (try? DJddCrypto.decryptPath(path)) ?? "" }
+    var id: Int { quality }
+
+    /// App 内 QUALITY_NAMES：0 流畅 / 1 标准 / 2 高品 / 3 无损
+    var label: String {
+        switch quality {
+        case 0: return "流畅"
+        case 1: return "标准"
+        case 2: return "高品"
+        case 3: return "无损"
+        default: return "档位\(quality)"
+        }
+    }
 }
 
 // MARK: - DJ多多 API 单例
@@ -140,8 +176,11 @@ struct DJddCategory: Identifiable, Hashable {
 /// DJ多多 4.3.7 平台接入
 ///
 /// 已破解并实测的接口：
-/// - 分类 `act=listtab`，data={"PageNo":0}（★ 不能带 type，否则 Count=0）
+/// - 分类 `act=listtab`，data={"PageNo":0,"type":"home"} → 首页 15 项
+///   （★ 不带 type / type="ring" 只有彩铃 3 项，此前"不能带 type"结论有误）
 /// - 列表 `act=<分类Act>`，data={"PageNo":p,"Id":分类Id}，实测 RetCode=200 Count=30
+///   （id=0 的最热/最新/无损专区不带 Id，只传 act）
+/// - 音质 `act=formats`，data={"Id","Uid","OpenId","Status"} → Formats[]（需登录态，未登录 401）
 /// - 下载 `CDN_HOST/dj/{Id%1000补3位}/{Path解密文件名}`，实测 206 + ftyp mp42
 /// - 封面 `CDN_HOST/v/cover/{Id%1000补3位}/{UserId}/{Cover}`（反汇编模板）
 /// - 搜索 服务端 search act 参数未破解，用本地过滤兜底
@@ -212,7 +251,8 @@ final class DJduoduoAPI {
 
     func categories() async -> [DJddCategory] {
         do {
-            let json = try await request("listtab", params: ["PageNo": 0])
+            // ★ type="home" → 首页 15 分类；不带/type="ring" 只有彩铃 3 项
+            let json = try await request("listtab", params: ["PageNo": 0, "type": "home"])
             let items = json["List"] as? [[String: Any]] ?? []
             let cats = items.map { d in
                 DJddCategory(
@@ -230,10 +270,10 @@ final class DJduoduoAPI {
     // MARK: 接口 2：列表
 
     func songs(category: DJddCategory, page: Int = 0) async throws -> [Song] {
-        let json = try await request(category.act, params: [
-            "PageNo": page,
-            "Id": category.id,
-        ])
+        // ★ id=0 的分类（最热/最新/无损专区）只传 act，不能带 Id=0
+        var params: [String: Any] = ["PageNo": page]
+        if category.id != 0 { params["Id"] = category.id }
+        let json = try await request(category.act, params: params)
         let items = json["List"] as? [[String: Any]] ?? []
         return items.compactMap { dict in
             let songId = (dict["Id"] as? NSNumber)?.intValue ?? 0
@@ -278,6 +318,34 @@ final class DJduoduoAPI {
         return "\(cdnHost)/dj/\(String(format: "%03d", songID % 1000))/\(fileName)"
     }
 
+    /// 音质档位（反汇编 0x1000a9e10：四参数缺一不可，否则 401）
+    /// Uid/OpenId 来自 App 登录态；未登录时服务端返回 RetCode=401。
+    func formats(song: Song, uid: Int = 0, openId: String = "",
+                 status: Int = 0) async throws -> [DJddFormat] {
+        let json = try await request("formats", params: [
+            "Id": song.id,
+            "Uid": uid,
+            "OpenId": openId,
+            "Status": status,
+        ])
+        let items = json["Formats"] as? [[String: Any]] ?? []
+        return items.map { d in
+            DJddFormat(
+                quality: (d["Quality"] as? NSNumber)?.intValue ?? 0,
+                size: (d["Size"] as? NSNumber)?.intValue ?? 0,
+                bitrate: (d["Bitrate"] as? NSNumber)?.intValue ?? 0,
+                path: d["Path"] as? String ?? ""
+            )
+        }
+    }
+
+    /// 指定档位的下载地址
+    func downloadURL(format: DJddFormat, song: Song) -> String? {
+        let fileName = format.fileName
+        guard !fileName.isEmpty else { return nil }
+        return "\(cdnHost)/dj/\(String(format: "%03d", song.id % 1000))/\(fileName)"
+    }
+
     private func coverURL(songId: Int, userId: Int, cover: String) -> URL? {
         guard !cover.isEmpty else { return nil }
         if cover.hasPrefix("http") { return URL(string: cover) }
@@ -295,10 +363,10 @@ final class DJduoduoAPI {
         }
     }
 
-    /// 搜索页调用：拉最热/最新/彩铃三分类后本地过滤
+    /// 搜索页调用：拉前 4 个分类后本地过滤（避免 15 个分类全拉一遍）
     func searchSongs(keyword: String, limit: Int = 30) async throws -> [Song] {
         var all: [Song] = []
-        for cat in DJddCategory.fallback {
+        for cat in Array(DJddCategory.fallback.prefix(4)) {
             if let list = try? await songs(category: cat, page: 0) {
                 all.append(contentsOf: list)
             }

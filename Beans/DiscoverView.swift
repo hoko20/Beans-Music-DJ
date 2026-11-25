@@ -92,6 +92,8 @@ struct DiscoverView: View {
     @AppStorage("beans.disclaimerAccepted") private var disclaimerAccepted = false
     /// 网易云歌单广场当前分类（「全部」展示官方精品歌单）
     @State private var neteaseCat = "全部"
+    /// DJ多多首页分类（15 个，来自 act=listtab&type=home）
+    @State private var djCategoryIndex = 0
     /// 官方歌单分类列表
     @State private var playlistCats: [String] = []
 
@@ -122,6 +124,9 @@ struct DiscoverView: View {
                         header
                         if !hidePlatformPicker {
                             providerPicker
+                        }
+                        if source == .djduoduo {
+                            djCategoryPicker
                         }
                         if let errorMessage {
                             ErrorStateView(message: errorMessage) {
@@ -166,7 +171,7 @@ struct DiscoverView: View {
             .confirmationDialog("主页平台", isPresented: $showHomePlatformMenu, titleVisibility: .visible) {
                 homePlatformSelectionMenu
             }
-            .task(id: "\(source.rawValue)-\(homeRenderingPaused)") {
+            .task(id: "\(source.rawValue)-\(homeRenderingPaused)-\(djCategoryIndex)") {
                 guard !homeRenderingPaused else { return }
                 await load(force: false)
             }
@@ -1144,6 +1149,36 @@ struct DiscoverView: View {
         }
     }
 
+    /// DJ多多首页 15 分类横向选择器
+    private var djCategoryPicker: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Array(DJddCategory.fallback.enumerated()), id: \.offset) { idx, cat in
+                    Button {
+                        guard idx != djCategoryIndex else { return }
+                        djCategoryIndex = idx
+                        Task { await load(force: true) }
+                    } label: {
+                        Text(cat.name)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background {
+                                Capsule().fill(idx == djCategoryIndex
+                                               ? Color.accentColor.opacity(0.85)
+                                               : Color.primary.opacity(0.06))
+                            }
+                            .foregroundStyle(idx == djCategoryIndex
+                                             ? Color.white : Color.primary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
     private var playlistSectionTitle: String {
         switch source {
         case .netease: return "推荐歌单"
@@ -1177,7 +1212,9 @@ struct DiscoverView: View {
         let requestedSource = source
         // 网易云非「全部」分类的歌单不缓存（切换分类即重新拉取）
         let requestedCat = neteaseCat
-        let loadKey = "\(requestedSource.rawValue)|\(requestedCat)"
+        let loadKey = requestedSource == .djduoduo
+            ? "\(requestedSource.rawValue)|dj\(djCategoryIndex)"
+            : "\(requestedSource.rawValue)|\(requestedCat)"
         if activeLoadKey == loadKey {
             return
         }
@@ -1195,7 +1232,9 @@ struct DiscoverView: View {
                 activeLoadKey = nil
             }
         }
-        let cacheable = requestedCat == "全部" || requestedSource != .netease
+        // DJ多多切分类必须重新拉，不能复用上一分类的 snapshot 缓存
+        let cacheable = requestedCat == "全部"
+            || (requestedSource != .netease && requestedSource != .djduoduo)
         if let cached = cache.cached(for: requestedSource), !force, cacheable {
             guard !Task.isCancelled, requestedSource == source else { return }
             apply(cached)
@@ -1211,7 +1250,9 @@ struct DiscoverView: View {
         }
 
         do {
-            let snapshot = try await fetchSnapshot(for: requestedSource, neteaseCat: requestedCat)
+            let snapshot = try await fetchSnapshot(for: requestedSource,
+                                                   neteaseCat: requestedCat,
+                                                   djCatIndex: djCategoryIndex)
             guard !Task.isCancelled, requestedSource == source else { return }
             apply(snapshot)
             if cacheable, !snapshot.isEmpty {
@@ -1325,7 +1366,8 @@ struct DiscoverView: View {
         }
     }
 
-    private func fetchSnapshot(for source: SearchProvider, neteaseCat: String) async throws -> DiscoverCache.Snapshot {
+    private func fetchSnapshot(for source: SearchProvider, neteaseCat: String,
+                               djCatIndex: Int = 0) async throws -> DiscoverCache.Snapshot {
         var snapshot = DiscoverCache.Snapshot()
         snapshot.savedAt = Date()
         switch source {
@@ -1357,9 +1399,11 @@ struct DiscoverView: View {
             snapshot.kugouTopLists = top
             snapshot.personalized = pp
         case .djduoduo:
-            // DJ多多：最热/最新/彩铃三分类合并为推荐流
-            let daily = await loadDJduoduoDailySongs(limit: 30)
-            snapshot.dailySongs = daily
+            // DJ多多：按选中的首页分类拉列表（共 15 个分类）
+            let all = DJddCategory.fallback
+            let idx = min(max(djCatIndex, 0), all.count - 1)
+            let daily = (try? await DJduoduoAPI.shared.songs(category: all[idx], page: 0)) ?? []
+            snapshot.dailySongs = Array(daily.prefix(30))
             snapshot.personalized = []
         }
         return snapshot
