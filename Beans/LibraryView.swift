@@ -576,13 +576,12 @@ struct LibraryView: View {
                 EmptyStateView(icon: "heart", text: "在发现页点歌曲红心即可收藏到本地")
             } else {
                 VStack(spacing: 0) {
-                    ForEach(favorites.djduoduoFavoriteSongs) { song in
-                        SongRow(song: song)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                player.play(songs: favorites.djduoduoFavoriteSongs,
-                                            startAt: favorites.djduoduoFavoriteSongs.firstIndex(of: song) ?? 0)
-                            }
+                    ForEach(Array(favorites.djduoduoFavoriteSongs.enumerated()), id: \.element.id) { idx, song in
+                        SongCell(
+                            song: song,
+                            playbackContext: favorites.djduoduoFavoriteSongs,
+                            playbackIndex: idx
+                        )
                         Divider().overlay(Color.beansComment.opacity(0.12))
                     }
                 }
