@@ -6,7 +6,7 @@ SwiftUI 液态玻璃 UI、播放器、下载、歌词、收藏、队列等能力
 
 - 仓库：https://github.com/hoko20/Beans-Music-DJ
 - 构建产物：`Beans-unsigned.ipa`（未签名，需 AltStore / Sideloadly / 爱思自签安装）
-- 编译状态：GitHub Actions `macos-26` 已构建通过（run 45559370460）
+- 编译状态：GitHub Actions `macos-26` 已构建通过（最新 run 45567210062，含 15 分类）
 
 ---
 
