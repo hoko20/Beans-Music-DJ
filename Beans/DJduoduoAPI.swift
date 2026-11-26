@@ -107,6 +107,7 @@ enum DJddError: LocalizedError {
     case pathSize(Int)
     case http(Int)
     case badJSON
+    case noPlayableURL
 
     var errorDescription: String? {
         switch self {
@@ -115,6 +116,7 @@ enum DJddError: LocalizedError {
         case .pathSize(let n): return "Path 密文须 16 字节，实际 \(n)"
         case .http(let c): return "HTTP \(c)"
         case .badJSON: return "响应不是合法 JSON"
+        case .noPlayableURL: return "无法解析播放地址"
         }
     }
 }
@@ -126,7 +128,7 @@ struct DJddCategory: Identifiable, Hashable {
     let name: String
     let act: String
 
-    var identifier: String { "\(id)" }
+    var identifier: String { "\(id)-\(act)-\(name)" }
 
     /// 实测 15 项（act=listtab, data={"PageNo":0,"type":"home"}）
     /// id=0 的项不带 Id，直接用 act 拉列表。
@@ -147,46 +149,41 @@ struct DJddCategory: Identifiable, Hashable {
         DJddCategory(id: 115, name: "铃声",     act: "homechn"),
         DJddCategory(id: 108, name: "老歌",     act: "homechn"),
     ]
+
+    /// 搜索聚合使用的 6 个分类（服务端 search 接口未开放）
+    static var searchCategories: [DJddCategory] {
+        Array(fallback.prefix(6))
+    }
 }
 
 /// 一个音质档位（act=formats 响应 Formats[] 的一项）
-/// 反汇编 0x10006947c：Quality / Size / Bitrate / Path（加密，同媒体 key）
 struct DJddFormat: Identifiable, Hashable {
     let quality: Int
     let size: Int
     let bitrate: Int
     let path: String
-    var fileName: String { (try? DJddCrypto.decryptPath(path)) ?? "" }
+
     var id: Int { quality }
 
-    /// App 内 QUALITY_NAMES：0 流畅 / 1 标准 / 2 高品 / 3 无损
-    var label: String {
-        switch quality {
-        case 0: return "流畅"
-        case 1: return "标准"
-        case 2: return "高品"
-        case 3: return "无损"
-        default: return "档位\(quality)"
-        }
+    var fileName: String {
+        (try? DJddCrypto.decryptPath(path)) ?? ""
     }
 
-    /// ★ CDN 路径前缀（反汇编 0x100064808 的 initWithObjects: 四元素数组）
-    ///   0 dj / 1 dj_nq / 2 dj_hq / 3 dj_sq
-    /// URL 模板 0x100065834: "%@/%@/%03d/%@" = host / 前缀 / (Id%1000) / 文件名
-    var pathPrefix: String {
-        switch quality {
-        case 0: return "dj"
-        case 1: return "dj_nq"
-        case 2: return "dj_hq"
-        case 3: return "dj_sq"
-        default: return "dj"
-        }
+    var tier: DJddQuality { DJddQuality(rawValue: quality) ?? .smooth }
+
+    var sizeText: String {
+        guard size > 0 else { return "体积未知" }
+        let mb = Double(size) / 1_048_576
+        return String(format: "%.1f MB", mb)
     }
 
-    /// 扩展名（由解密出的文件名决定）：aac / mp3 / flac
+    var bitrateText: String {
+        bitrate > 0 ? "\(bitrate) kbps" : tier.bitrateText
+    }
+
     var fileExtension: String {
         let ext = (fileName as NSString).pathExtension
-        return ext.isEmpty ? "m4a" : ext
+        return ext.isEmpty ? "mp3" : ext
     }
 }
 
@@ -196,14 +193,11 @@ struct DJddFormat: Identifiable, Hashable {
 ///
 /// 已破解并实测的接口：
 /// - 分类 `act=listtab`，data={"PageNo":0,"type":"home"} → 首页 15 项
-///   （★ 不带 type / type="ring" 只有彩铃 3 项，此前"不能带 type"结论有误）
 /// - 列表 `act=<分类Act>`，data={"PageNo":p,"Id":分类Id}，实测 RetCode=200 Count=30
-///   （id=0 的最热/最新/无损专区不带 Id，只传 act）
-/// - 音质 `act=formats`，data={"Id","Uid","OpenId","Status"} → Formats[]（需登录态，未登录 401）
-/// - 下载 `CDN_HOST/dj/{Id%1000补3位}/{Path解密文件名}`，实测 206 + ftyp mp42
-/// - 封面 `CDN_HOST/v/cover/{Id%1000补3位}/{UserId}/{Cover}`（反汇编模板）
-/// - 搜索 服务端 search act 参数未破解，用本地过滤兜底
-/// - 歌词 服务端 lyric 是独立第五套密钥，已停止分析；本地 LRC 由 Beans 的 LyricParser 处理
+/// - 音质 `act=formats`，data={"Id","Uid","OpenId","Status"} → Formats[]
+///   ★ Uid=-1 游客态即可拿到四档
+/// - 下载 `CDN/{前缀}/{Id%1000补3位}/{Path解密文件名}`
+/// - 搜索 服务端 search 未开放，改为多分类聚合 + 本地过滤
 final class DJduoduoAPI {
 
     static let shared = DJduoduoAPI()
@@ -213,6 +207,9 @@ final class DJduoduoAPI {
 
     /// config 下发实测值；备用节点 txcdn.djduoduo.com / hscdn.dianyinduoduo.com
     var cdnHost = "http://bdcdn.djduoduo.com"
+
+    private let formatLock = NSLock()
+    private var formatCache: [Int: [DJddFormat]] = [:]
 
     private init() {}
 
@@ -246,6 +243,7 @@ final class DJduoduoAPI {
         }
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
+        req.timeoutInterval = 20
         req.setValue("DJDuoduo/4.3.7 (iPhone; iOS 26.0; Scale/3.00)", forHTTPHeaderField: "User-Agent")
         req.setValue("*/*", forHTTPHeaderField: "Accept")
         req.setValue("zh-Hans,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
@@ -273,10 +271,12 @@ final class DJduoduoAPI {
             // ★ type="home" → 首页 15 分类；不带/type="ring" 只有彩铃 3 项
             let json = try await request("listtab", params: ["PageNo": 0, "type": "home"])
             let items = json["List"] as? [[String: Any]] ?? []
-            let cats = items.map { d in
-                DJddCategory(
+            let cats = items.compactMap { d -> DJddCategory? in
+                let name = d["name"] as? String ?? d["Name"] as? String ?? ""
+                guard !name.isEmpty else { return nil }
+                return DJddCategory(
                     id: (d["Id"] as? NSNumber)?.intValue ?? 0,
-                    name: d["name"] as? String ?? d["Name"] as? String ?? "未命名",
+                    name: name,
                     act: d["Act"] as? String ?? "homechn"
                 )
             }
@@ -288,60 +288,46 @@ final class DJduoduoAPI {
 
     // MARK: 接口 2：列表
 
-    func songs(category: DJddCategory, page: Int = 0) async throws -> [Song] {
+    func songs(category: DJddCategory, page: Int = 0) async throws -> DJddSongPage {
         // ★ id=0 的分类（最热/最新/无损专区）只传 act，不能带 Id=0
         var params: [String: Any] = ["PageNo": page]
         if category.id != 0 { params["Id"] = category.id }
         let json = try await request(category.act, params: params)
         let items = json["List"] as? [[String: Any]] ?? []
-        return items.compactMap { dict in
+        let songs = items.compactMap { dict -> Song? in
             let songId = (dict["Id"] as? NSNumber)?.intValue ?? 0
             guard songId != 0 else { return nil }
             let name = dict["Name"] as? String ?? "未知歌曲"
-            let path = dict["Path"] as? String ?? ""
-            let cover = dict["Cover"] as? String ?? ""
-            let userId = (dict["UserId"] as? NSNumber)?.intValue ?? 0
-            let durationMs = (dict["Duration"] as? NSNumber)?.doubleValue ?? 0
+            let durationSeconds = (dict["Duration"] as? NSNumber)?.doubleValue ?? 0
             return Song(
                 id: songId,
                 name: name,
                 artists: dict["User"] as? String ?? "",
-                album: "DJ多多",
-                coverURL: coverURL(songId: songId, userId: userId, cover: cover),
-                duration: durationMs > 1000 ? durationMs / 1000 : durationMs,
-                source: .djduoduo,
-                djduoduoPath: path,
-                djduoduoUserId: userId
+                duration: durationSeconds,
+                path: dict["Path"] as? String ?? "",
+                userId: (dict["UserId"] as? NSNumber)?.intValue ?? 0,
+                maxQuality: (dict["MaxQ"] as? NSNumber)?.intValue ?? 2
             )
         }
+        let hasMoreFlag = json["HasMore"] as? NSNumber
+        let hasMore = hasMoreFlag?.intValue == 1
+            || (hasMoreFlag == nil && songs.count >= 25)
+        return DJddSongPage(songs: songs, hasMore: hasMore)
     }
 
     /// 首页默认推荐（最热）
     func recommendSongs(limit: Int = 30) async throws -> [Song] {
-        try await songs(category: DJddCategory.fallback[0], page: 0)
+        let page = try await songs(category: DJddCategory.fallback[0], page: 0)
+        return Array(page.songs.prefix(limit))
     }
 
-    // MARK: 接口 3：下载 / 封面 URL（反汇编 0x100065834：`%@/%@/%03d/%@`）
+    // MARK: 接口 3：音质
 
-    func downloadURL(song: Song) -> String? {
-        let path = song.djduoduoPath ?? ""
-        if path.hasPrefix("http://") || path.hasPrefix("https://") { return path }
-        let fileName = (try? DJddCrypto.decryptPath(path)) ?? ""
-        guard !fileName.isEmpty else { return nil }
-        return "\(cdnHost)/dj/\(String(format: "%03d", song.id % 1000))/\(fileName)"
-    }
-
-    func downloadURL(songID: Int, path: String) -> String? {
-        let fileName = (try? DJddCrypto.decryptPath(path)) ?? ""
-        guard !fileName.isEmpty else { return nil }
-        return "\(cdnHost)/dj/\(String(format: "%03d", songID % 1000))/\(fileName)"
-    }
-
-    /// 音质档位（反汇编 0x1000a9e10：四参数缺一不可）
-    /// ★★ Uid=-1 即游客态（2026-11-25 实测 RetCode=200，四档全返回）；
-    ///    Uid=0 会被服务端判无效 → 401。故未登录也能拿全档位。
+    /// 音质档位（act=formats，四参数缺一不可）
+    /// ★★ Uid=-1 即游客态，四档全返回；Uid=0 会被判无效 → 401
     func formats(song: Song, uid: Int = -1, openId: String = "",
                  status: Int = 0) async throws -> [DJddFormat] {
+        if let cached = cachedFormats(for: song.id) { return cached }
         let json = try await request("formats", params: [
             "Id": song.id,
             "Uid": uid,
@@ -351,7 +337,7 @@ final class DJduoduoAPI {
         // 响应结构：{ "Item": { "Id": ..., "Formats": [...] } }
         let item = json["Item"] as? [String: Any] ?? json
         let items = item["Formats"] as? [[String: Any]] ?? []
-        return items.map { d in
+        let formats = items.map { d in
             DJddFormat(
                 quality: (d["Quality"] as? NSNumber)?.intValue ?? 0,
                 size: (d["Size"] as? NSNumber)?.intValue ?? 0,
@@ -359,71 +345,92 @@ final class DJduoduoAPI {
                 path: d["Path"] as? String ?? ""
             )
         }
+        if !formats.isEmpty { storeFormats(formats, for: song.id) }
+        return formats
     }
 
-    /// 指定档位的下载地址
-    /// ★ 模板 "%@/%@/%03d/%@"（0x100065834）：
-    ///     host / format.pathPrefix / (Id % 1000) / 解密文件名
-    ///   实测 Q0 dj/ Q1 dj_nq/ Q2 dj_hq/ Q3 dj_sq/
+    private func cachedFormats(for songID: Int) -> [DJddFormat]? {
+        formatLock.lock()
+        defer { formatLock.unlock() }
+        return formatCache[songID]
+    }
+
+    private func storeFormats(_ formats: [DJddFormat], for songID: Int) {
+        formatLock.lock()
+        formatCache[songID] = formats
+        formatLock.unlock()
+    }
+
+    /// 指定档位的下载地址：host / 前缀 / (Id % 1000) / 解密文件名
     func downloadURL(format: DJddFormat, song: Song) -> String? {
         let fileName = format.fileName
         guard !fileName.isEmpty else { return nil }
-        return "\(cdnHost)/\(format.pathPrefix)/\(String(format: "%03d", song.id % 1000))/\(fileName)"
+        return "\(cdnHost)/\(format.tier.pathPrefix)/\(String(format: "%03d", song.id % 1000))/\(fileName)"
     }
 
-    private func coverURL(songId: Int, userId: Int, cover: String) -> URL? {
-        guard !cover.isEmpty else { return nil }
-        if cover.hasPrefix("http") { return URL(string: cover) }
-        return URL(string: "\(cdnHost)/v/cover/\(String(format: "%03d", songId % 1000))/\(userId)/\(cover)")
+    /// 默认档位地址（列表 Path 即高品文件名，走 dj 目录）
+    func defaultURL(song: Song) -> String? {
+        guard !song.path.isEmpty else { return nil }
+        let fileName = (try? DJddCrypto.decryptPath(song.path)) ?? ""
+        guard !fileName.isEmpty else { return nil }
+        return "\(cdnHost)/dj/\(String(format: "%03d", song.id % 1000))/\(fileName)"
     }
 
-    // MARK: 接口 4：搜索（本地过滤服务端已加载列表）
+    /// 播放地址：优先请求 formats 命中目标档位，失败时回退到列表 Path。
+    func streamURL(song: Song, quality: DJddQuality) async -> URL? {
+        if let formats = try? await formats(song: song), !formats.isEmpty {
+            let picked = formats.first { $0.quality == quality.rawValue }
+                ?? formats.filter { $0.quality <= quality.rawValue }.max { $0.quality < $1.quality }
+                ?? formats.min { $0.quality < $1.quality }
+            if let picked,
+               let string = downloadURL(format: picked, song: song),
+               let url = URL(string: string) {
+                return url
+            }
+        }
+        if let fallback = defaultURL(song: song) {
+            return URL(string: fallback)
+        }
+        return nil
+    }
+
+    // MARK: 接口 4：搜索（多分类聚合 + 本地过滤）
 
     static func localSearch(_ songs: [Song], keyword: String) -> [Song] {
         let kw = keyword.trimmingCharacters(in: .whitespaces)
-        guard !kw.isEmpty else { return songs }
+        guard !kw.isEmpty else { return [] }
         return songs.filter {
             $0.name.localizedCaseInsensitiveContains(kw)
                 || $0.artists.localizedCaseInsensitiveContains(kw)
         }
     }
 
-    /// 搜索页调用：拉前 4 个分类后本地过滤（避免 15 个分类全拉一遍）
-    func searchSongs(keyword: String, limit: Int = 30) async throws -> [Song] {
-        var all: [Song] = []
-        for cat in Array(DJddCategory.fallback.prefix(4)) {
-            if let list = try? await songs(category: cat, page: 0) {
-                all.append(contentsOf: list)
+    /// 搜索：并发拉取 6 个分类首页，按标题 / 上传者本地过滤并去重。
+    func searchSongs(keyword: String,
+                     categories: [DJddCategory] = DJddCategory.searchCategories,
+                     limit: Int = 60) async -> [Song] {
+        let kw = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !kw.isEmpty else { return [] }
+        var collected: [Song] = []
+        await withTaskGroup(of: [Song].self) { group in
+            for category in categories {
+                group.addTask {
+                    let page = try? await self.songs(category: category, page: 0)
+                    return page?.songs ?? []
+                }
             }
-            if all.count >= limit { break }
+            for await list in group {
+                collected.append(contentsOf: list)
+            }
         }
-        return Array(Self.localSearch(all, keyword: keyword).prefix(limit))
-    }
-
-    /// 歌词：服务端是独立密钥链路，已停止分析；返回空串交给 Beans 的 LyricParser
-    func lyric(song: Song) -> String { "" }
-
-    // MARK: - 音质映射（DJdd 档位 0-3 ↔ Beans DownloadQuality）
-
-    /// Beans 下载音质 → DJdd Quality 档位
-    /// 0 流畅 / 1 标准 / 2 高品 / 3 无损
-    static func djQuality(for quality: DownloadQuality) -> Int {
-        switch quality {
-        case .kb128: return 1        // 标准 128k
-        case .kb320: return 2        // 高品 320k
-        case .flac, .flac24bit, .hires, .atmos, .atmosPlus, .master: return 3  // 无损
-        default: return 0
+        var seen = Set<String>()
+        var result: [Song] = []
+        for song in Self.localSearch(collected, keyword: kw) {
+            guard !seen.contains(song.identityKey) else { continue }
+            seen.insert(song.identityKey)
+            result.append(song)
+            if result.count >= limit { break }
         }
-    }
-
-    /// DJdd Quality 档位 → Beans 下载音质（用于展示实际下载到的档位）
-    static func downloadQuality(forDJQuality quality: Int) -> DownloadQuality {
-        switch quality {
-        case 0: return .kb128
-        case 1: return .kb128
-        case 2: return .kb320
-        case 3: return .flac
-        default: return .kb128
-        }
+        return result
     }
 }

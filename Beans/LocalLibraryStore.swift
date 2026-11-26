@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 /// 本地歌单（保存在设备本机，不依赖任何平台账号）
@@ -136,6 +137,11 @@ final class LocalLibraryStore: ObservableObject {
             removed += before - playlists[index].songs.count
         }
         return removed
+    }
+
+    /// 用备份数据整体替换歌单（配置恢复用）
+    func replaceAll(_ list: [LocalPlaylist]) {
+        playlists = list
     }
 
     private func save() {

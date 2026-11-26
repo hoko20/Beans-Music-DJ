@@ -59,7 +59,7 @@ struct QueueView: View {
     private func row(_ song: Song, index: Int) -> some View {
         let isCurrent = index == player.currentIndex
         HStack(spacing: 12) {
-            CoverImage(url: song.coverURL, size: 42, cornerRadius: 9)
+            SongCover(seed: song.coverSeed, size: 42, cornerRadius: 9)
             VStack(alignment: .leading, spacing: 3) {
                 Text(song.name)
                     .font(BeansFont.appFont(15, isCurrent ? .semibold : .regular))

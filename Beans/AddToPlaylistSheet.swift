@@ -1,109 +1,102 @@
 import SwiftUI
 
-struct AddToPlaylistSheet: View {
-    @EnvironmentObject private var theme: ThemeStore
-    @EnvironmentObject private var auth: AuthStore
-    private let favorites = FavoritesStore.shared
+/// 把歌曲加入本地歌单
+struct AddToLocalPlaylistSheet: View {
     @Environment(\.dismiss) private var dismiss
-
+    @ObservedObject private var library = LocalLibraryStore.shared
     let song: Song
+
     @State private var newName = ""
-    @State private var showCreateField = false
-    @State private var message: String?
+    @State private var showCreate = false
 
     var body: some View {
-        let _ = theme.accent
-        BeansNavigationStack {
-            List {
-                if auth.playlists.isEmpty {
-                    Text("暂无歌单，请先创建一个")
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                SongCover(seed: song.coverSeed, size: 44, cornerRadius: 10)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(song.name)
+                        .font(BeansFont.appFont(16, .semibold))
+                        .foregroundStyle(Color.beansLabel)
+                        .lineLimit(1)
+                    Text("添加到本地歌单")
+                        .font(BeansFont.appFont(12))
                         .foregroundStyle(Color.beansComment)
-                } else {
-                    Section("选择歌单") {
-                        ForEach(auth.playlists) { playlist in
-                            Button {
-                                Task { await add(to: playlist) }
-                            } label: {
-                                HStack(spacing: 12) {
-                                    CoverImage(url: playlist.coverURL, size: 38, cornerRadius: 8)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(playlist.name)
-                                            .font(BeansFont.appFont(15))
-                                            .foregroundStyle(Color.beansLabel)
-                                            .lineLimit(1)
-                                        Text(beansSongCountText(playlist.trackCount))
-                                            .font(BeansFont.appFont(11))
-                                            .foregroundStyle(Color.beansComment)
+                }
+                Spacer()
+            }
+
+            if library.playlists.isEmpty && !showCreate {
+                EmptyStateView(icon: "music.note.list", text: "还没有歌单，先建一个吧")
+            }
+
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(library.playlists) { playlist in
+                        Button {
+                            library.addSong(song, to: playlist.id)
+                            ToastCenter.shared.show("已加入「\(playlist.name)」")
+                            dismiss()
+                        } label: {
+                            HStack(spacing: 12) {
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(LinearGradient.beansAccent)
+                                    .frame(width: 40, height: 40)
+                                    .overlay {
+                                        Image(systemName: "music.note.list")
+                                            .font(.system(size: 16, weight: .semibold))
+                                            .foregroundStyle(.white)
                                     }
-                                    Spacer()
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(playlist.name)
+                                        .font(BeansFont.appFont(15))
+                                        .foregroundStyle(Color.beansLabel)
+                                    Text(beansSongCountText(playlist.songs.count))
+                                        .font(BeansFont.appFont(11))
+                                        .foregroundStyle(Color.beansComment)
                                 }
+                                Spacer()
+                                Image(systemName: "plus")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(Color.beansAmber)
+                            }
+                            .padding(10)
+                            .background {
+                                BeansGlass(shape: RoundedRectangle(cornerRadius: 14, style: .continuous))
                             }
                         }
-                    }
-                }
-
-                if showCreateField {
-                    Section("新建歌单") {
-                        TextField("歌单名称", text: $newName)
-                            .submitLabel(.done)
-                        Button {
-                            Task { await createAndAdd() }
-                        } label: {
-                            Text("创建并添加")
-                                .font(BeansFont.appFont(15, .semibold))
-                                .foregroundStyle(Color.beansAmber)
-                        }
-                    }
-                } else {
-                    Button {
-                        showCreateField = true
-                    } label: {
-                        Label("新建歌单", systemImage: "plus.circle")
-                    }
-                }
-
-                if let message {
-                    Section {
-                        Text(message)
-                            .font(BeansFont.appFont(13))
-                            .foregroundStyle(Color.beansSage)
+                        .buttonStyle(.plain)
                     }
                 }
             }
-            .navigationTitle("添加到歌单")
-            .navigationBarTitleDisplayMode(.inline)
-        }
-    }
 
-    private func add(to playlist: Playlist) async {
-        let ok = (try? await NetEaseAPI.shared.addToPlaylist(playlistID: playlist.id, songIDs: [song.id])) ?? false
-        if ok {
-            if !favorites.isLiked(song) {
-                _ = await favorites.toggle(song)
-            }
-            dismiss()
-        } else {
-            message = "添加失败，请重试"
-        }
-    }
-
-    private func createAndAdd() async {
-        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        do {
-            let playlistID = try await NetEaseAPI.shared.createPlaylist(name: name)
-            let ok = try await NetEaseAPI.shared.addToPlaylist(playlistID: playlistID, songIDs: [song.id])
-            if ok {
-                if !favorites.isLiked(song) {
-                    _ = await favorites.toggle(song)
+            if showCreate {
+                HStack(spacing: 8) {
+                    TextField("歌单名称", text: $newName)
+                        .textFieldStyle(.roundedBorder)
+                    Button("创建") {
+                        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !name.isEmpty else { return }
+                        let playlist = library.createPlaylist(name: name)
+                        library.addSong(song, to: playlist.id)
+                        ToastCenter.shared.show("已创建「\(name)」并加入")
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.beansAmber)
                 }
-                try? await auth.loadLibrary()
-                dismiss()
             } else {
-                message = "歌单已创建，但添加歌曲失败"
+                Button {
+                    showCreate = true
+                } label: {
+                    Label("新建歌单", systemImage: "plus.circle")
+                        .font(BeansFont.appFont(15, .medium))
+                        .foregroundStyle(Color.beansAmber)
+                }
+                .buttonStyle(.plain)
             }
-        } catch {
-            message = error.localizedDescription
         }
+        .padding(20)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 }

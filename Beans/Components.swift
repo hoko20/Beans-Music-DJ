@@ -1,22 +1,16 @@
 import SwiftUI
-import CoreImage.CIFilterBuiltins
+import UIKit
 
 // MARK: - 工具
 
-func beansSongCountText(_ count: Int) -> String {
-    beansLocalized("\(count) 首", "\(count) songs")
-}
-
-func beansLocalSongCountText(_ count: Int) -> String {
-    beansLocalized("\(count) 首 · 本机", "\(count) songs · On device")
-}
+func beansSongCountText(_ count: Int) -> String { "\(count) 首" }
 
 func beansTimeString(_ seconds: Double) -> String {
     let total = max(0, Int(seconds))
     return String(format: "%d:%02d", total / 60, total % 60)
 }
 
-// MARK: - 触感反馈（复用生成器实例，避免每次点击创建新对象造成额外开销/发热）
+// MARK: - 触感反馈（复用生成器实例，避免每次点击创建新对象）
 
 enum BeansHaptics {
     static let enabledKey = "beans.haptics.enabled"
@@ -77,25 +71,12 @@ struct GlassBackdrop: View {
     @EnvironmentObject private var theme: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("beans.uiStyle") private var uiStyleRaw = BeansUIStyle.liquid.rawValue
-    /// 自定义背景色（nil 使用默认氛围渐变）
     var customColor: Color? = nil
-    /// 主页模式：即使“同步到全部页面”关闭，也始终显示壁纸/背景色（仅发现页传 true）
     var homeMode: Bool = false
-    /// 详情页使用原生氛围背景，不跟随全局壁纸同步
-    var ignoreCustomBackground: Bool = false
-    /// 主页壁纸额外模糊半径
     var wallpaperBlur: CGFloat = 0
 
-    /// 当前页面是否启用自定义背景：同步开启时全部页面生效，关闭时仅主页生效
     private var showCustomBackground: Bool {
-        !ignoreCustomBackground && (theme.backgroundSyncAll || homeMode)
-    }
-
-    /// 背景图上叠加的可读性遮罩：浅色模式几乎不压暗，深色模式适度压暗
-    private var wallpaperOverlay: [Color] {
-        colorScheme == .dark
-            ? [.black.opacity(0.35), .black.opacity(0.55)]
-            : [.black.opacity(0.08), .black.opacity(0.18)]
+        theme.backgroundSyncAll || homeMode
     }
 
     private var uiStyle: BeansUIStyle {
@@ -111,7 +92,12 @@ struct GlassBackdrop: View {
                 Color(UIColor.systemBackground)
             } else if let image = activeBackgroundImage, showCustomBackground {
                 WallpaperImage(image: image, blurRadius: wallpaperBlur)
-                LinearGradient(colors: wallpaperOverlay, startPoint: .top, endPoint: .bottom)
+                LinearGradient(
+                    colors: colorScheme == .dark
+                        ? [.black.opacity(0.35), .black.opacity(0.55)]
+                        : [.black.opacity(0.08), .black.opacity(0.18)],
+                    startPoint: .top, endPoint: .bottom
+                )
             } else if showCustomBackground, let activeBackgroundColor {
                 LinearGradient(
                     colors: [activeBackgroundColor.opacity(0.9), activeBackgroundColor.opacity(0.55)],
@@ -137,20 +123,15 @@ struct GlassBackdrop: View {
     }
 }
 
-
-// MARK: - 背景墙纸（上传图片：固定全屏布局，不影响其他 UI 尺寸；小图轻度柔化避免像素感）
-
 struct WallpaperImage: View {
     let image: UIImage
     var blurRadius: CGFloat = 0
 
-    /// 小于约 700x700 视为小图：放大时轻度模糊柔化，避免满屏马赛克
     private static func isSmall(_ image: UIImage) -> Bool {
         image.size.width * image.size.height < 480_000
     }
 
     var body: some View {
-        // 用 GeometryReader 明确采用父容器尺寸渲染，图片尺寸/比例与 UI 布局完全隔离
         GeometryReader { geo in
             Image(uiImage: image)
                 .resizable()
@@ -163,7 +144,7 @@ struct WallpaperImage: View {
     }
 }
 
-// MARK: - 全局容器（跟随全局 UI 样式）
+// MARK: - 全局玻璃容器
 
 struct BeansGlass<S: Shape>: View {
     @AppStorage("beans.uiStyle") private var uiStyleRaw = BeansUIStyle.liquid.rawValue
@@ -188,42 +169,28 @@ struct BeansGlass<S: Shape>: View {
                         .glassEffect(.clear, in: shape)
                 }
             } else {
-                shape
-                    .fill(.ultraThinMaterial)
+                shape.fill(.ultraThinMaterial)
             }
         } else {
             switch uiStyle {
             case .clear, .liquid:
-                shape
-                    .fill(.ultraThinMaterial)
+                shape.fill(.ultraThinMaterial)
             case .compact:
-                shape
-                    .fill(Color.beansGlassFill.opacity(0.74))
+                shape.fill(Color.beansGlassFill.opacity(0.74))
             case .nativeClean:
-                shape
-                    .fill(Color.beansGlassFill.opacity(0.62))
+                shape.fill(Color.beansGlassFill.opacity(0.62))
             }
         }
     }
 }
 
-/// 统一表面容器：Apple 简洁样式使用低存在感的平面底色，
-/// 其他样式继续沿用原有的玻璃材质，避免页面局部出现不同质感。
 struct BeansSurface<S: Shape>: View {
-    @AppStorage("beans.uiStyle") private var uiStyleRaw = BeansUIStyle.liquid.rawValue
-
     let shape: S
-
-    private var uiStyle: BeansUIStyle {
-        uiStyleRaw == "outline" ? .clear : (BeansUIStyle(rawValue: uiStyleRaw) ?? .liquid)
-    }
 
     var body: some View {
         BeansGlass(shape: shape)
     }
 }
-
-// MARK: - 通用卡片（跟随全局 UI 样式）
 
 struct GlassCard<Content: View>: View {
     var cornerRadius: CGFloat = 24
@@ -232,10 +199,6 @@ struct GlassCard<Content: View>: View {
 
     private var uiStyle: BeansUIStyle {
         uiStyleRaw == "outline" ? .clear : (BeansUIStyle(rawValue: uiStyleRaw) ?? .liquid)
-    }
-
-    private var isLiquid: Bool {
-        uiStyle == .liquid || uiStyle == .nativeClean
     }
 
     private var resolvedCornerRadius: CGFloat {
@@ -251,7 +214,7 @@ struct GlassCard<Content: View>: View {
     }
 
     var body: some View {
-        if isLiquid {
+        if uiStyle == .liquid || uiStyle == .nativeClean {
             if #available(iOS 26, *) {
                 GlassEffectContainer {
                     content()
@@ -280,21 +243,8 @@ struct GlassCard<Content: View>: View {
     }
 }
 
-/// 播放/暂停图标切换过渡：iOS 17+ 使用符号替换动画，低版本回退透明度过渡
-struct BeansSymbolReplace: ViewModifier {
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if #available(iOS 17, *) {
-            content.contentTransition(.symbolEffect(.replace))
-        } else if #available(iOS 16, *) {
-            content.contentTransition(.opacity)
-        } else {
-            content
-        }
-    }
-}
+// MARK: - 播放/暂停图标
 
-/// 播放/暂停 morph 图标：三角播放态与双竖线暂停态共享一个固定画布，避免按钮尺寸跳动。
 struct PlayPauseMorphIcon: View {
     let isPlaying: Bool
     var size: CGFloat = 22
@@ -323,242 +273,127 @@ struct PlayPauseMorphIcon: View {
     }
 }
 
+// MARK: - 导航容器
 
-// MARK: - iOS 15 兼容包装（低版本自动降级）
-
-/// iOS 16+ 使用 NavigationStack，iOS 15 回退 NavigationView（堆栈样式）
 struct BeansNavigationStack<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        if #available(iOS 16, *) {
-            NavigationStack { content() }
-        } else {
-            NavigationView { content() }.navigationViewStyle(.stack)
-        }
-    }
-}
-
-/// 带可编程路径的导航堆栈，用于从卡片点击进入统一的详情页。
-struct BeansNavigationStackWithPath<Route: Hashable, Content: View>: View {
-    @Binding var path: [Route]
-    @ViewBuilder var content: () -> Content
-
-    var body: some View {
-        if #available(iOS 16, *) {
-            NavigationStack(path: $path) { content() }
-        } else {
-            NavigationView { content() }.navigationViewStyle(.stack)
-        }
+        NavigationStack { content() }
     }
 }
 
 extension View {
-    /// iOS 16+ 的类型化导航目的地，低版本保持原有页面结构。
-    @ViewBuilder
-    func beansNavigationDestination<Route: Hashable, Destination: View>(
-        for route: Route.Type,
-        @ViewBuilder destination: @escaping (Route) -> Destination
-    ) -> some View {
-        if #available(iOS 16, *) {
-            navigationDestination(for: route, destination: destination)
-        } else {
-            self
-        }
-    }
-}
-
-/// 弹窗尺寸（自定义枚举，避免在低版本引用 iOS 16 类型）
-enum BeansDetent {
-    case medium
-    case large
-    case fraction(CGFloat)
-    case height(CGFloat)
-}
-
-/// 弹窗尺寸与拖拽指示条：iOS 16+ 生效，低版本全屏展示
-struct BeansSheetModifier: ViewModifier {
-    let detents: [BeansDetent]
-    var dragIndicator: Bool?
-
-    @available(iOS 16, *)
-    private static func makeDetents(_ detents: [BeansDetent]) -> Set<PresentationDetent> {
-        var result: Set<PresentationDetent> = []
-        for detent in detents {
-            switch detent {
-            case .medium: result.insert(.medium)
-            case .large: result.insert(.large)
-            case .fraction(let f): result.insert(.fraction(f))
-            case .height(let h): result.insert(.height(h))
-            }
-        }
-        return result
-    }
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if #available(iOS 16, *) {
-            if let dragIndicator {
-                content
-                    .presentationDetents(Self.makeDetents(detents))
-                    .presentationDragIndicator(dragIndicator ? .visible : .hidden)
-            } else {
-                content
-                    .presentationDetents(Self.makeDetents(detents))
-            }
-        } else {
-            content
-        }
-    }
-}
-
-extension View {
-    /// iOS 16+ 隐藏滚动条，低版本保持默认
-    @ViewBuilder
     func beansScrollIndicatorsHidden() -> some View {
-        if #available(iOS 16, *) { self.scrollIndicators(.hidden) } else { self }
+        scrollIndicators(.hidden)
     }
 
-    /// iOS 16+ 滚动时收起键盘，低版本保持默认
-    @ViewBuilder
-    func beansScrollDismissesKeyboard() -> some View {
-        if #available(iOS 16, *) { self.scrollDismissesKeyboard(.interactively) } else { self }
-    }
-
-    /// iOS 16+ 隐藏滚动内容默认背景，低版本保持默认
-    @ViewBuilder
     func beansScrollContentBackgroundHidden() -> some View {
-        if #available(iOS 16, *) { self.scrollContentBackground(.hidden) } else { self }
-    }
-
-    /// 在歌单、排行榜等详情页底部保留可用的迷你播放器。
-    func beansDetailMiniPlayer() -> some View {
-        modifier(BeansDetailMiniPlayerModifier())
+        scrollContentBackground(.hidden)
     }
 }
 
-private struct BeansDetailMiniPlayerModifier: ViewModifier {
-    @EnvironmentObject private var auth: AuthStore
-    @EnvironmentObject private var player: PlayerManager
-    @EnvironmentObject private var theme: ThemeStore
-    @ObservedObject private var favorites = FavoritesStore.shared
-    @State private var showPlayer = false
+// MARK: - 程序化封面（DJ多多无封面图，用歌曲 ID 生成稳定渐变 + 迷你波形）
 
-    func body(content: Content) -> some View {
-        content
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if player.currentSong != nil {
-                    MiniPlayerView(
-                        showPlayer: $showPlayer,
-                        presentation: .dock
-                    )
-                    .environmentObject(player.clock)
-                    .environmentObject(theme)
-                    .environmentObject(favorites)
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 4)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
+enum CoverArt {
+    /// 由歌曲 ID 稳定推导的色相
+    static func hue(seed: Int) -> Double {
+        let mixed = abs(seed &* 2_654_435_761) % 3600
+        return Double(mixed) / 3600.0
+    }
+
+    static func colors(seed: Int, colorScheme: ColorScheme = .dark) -> [Color] {
+        let base = hue(seed: seed)
+        let shift = 0.12 + Double(abs(seed) % 7) * 0.012
+        let saturation = colorScheme == .dark ? 0.62 : 0.52
+        let brightness = colorScheme == .dark ? 0.78 : 0.86
+        return [
+            Color(hue: base, saturation: saturation, brightness: brightness),
+            Color(hue: (base + shift).truncatingRemainder(dividingBy: 1),
+                  saturation: min(0.85, saturation + 0.12),
+                  brightness: brightness * 0.72),
+        ]
+    }
+
+    static func uiImage(seed: Int, size: CGFloat = 600) -> UIImage {
+        let palette = colors(seed: seed, colorScheme: .dark)
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size))
+        return renderer.image { ctx in
+            let cg = ctx.cgContext
+            let colors = [UIColor(palette[0]).cgColor, UIColor(palette[1]).cgColor] as CFArray
+            if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                         colors: colors,
+                                         locations: [0, 1]) {
+                cg.drawLinearGradient(gradient,
+                                      start: .zero,
+                                      end: CGPoint(x: size, y: size),
+                                      options: [])
             }
-            .fullScreenCover(isPresented: $showPlayer) {
-                // 详情页使用与主页相同的播放页容器，确保顶部下拉手势可以关闭播放器。
-                BeansNowPlayingPresentation(
-                    isPresented: $showPlayer,
-                    usesSystemInteractiveDismissal: false
-                ) {
-                    PlayerView(isPresented: $showPlayer)
-                        .environmentObject(auth)
-                        .environmentObject(player)
-                        .environmentObject(player.clock)
-                        .environmentObject(theme)
-                        .environmentObject(favorites)
-                }
+            // 波形
+            cg.setFillColor(UIColor.white.withAlphaComponent(0.28).cgColor)
+            let bars = 9
+            let barWidth = size * 0.035
+            let gap = size * 0.022
+            let total = CGFloat(bars) * barWidth + CGFloat(bars - 1) * gap
+            var x = (size - total) / 2
+            for index in 0..<bars {
+                let phase = sin(Double(seed % 97) * 0.19 + Double(index) * 0.9)
+                let height = size * (0.10 + 0.12 * abs(phase))
+                let rect = CGRect(x: x, y: size * 0.74 - height / 2,
+                                  width: barWidth, height: height)
+                let path = UIBezierPath(roundedRect: rect, cornerRadius: barWidth / 2)
+                path.fill()
+                x += barWidth + gap
             }
+        }
     }
 }
 
-// MARK: - 封面图
-
-struct CoverImage: View {
-    let url: URL?
+/// 歌曲封面：程序化渐变 + 波形，不再依赖不存在的封面接口。
+struct SongCover: View {
+    let seed: Int
     var size: CGFloat
     var cornerRadius: CGFloat = 12
-    /// 封面未加载时的提示文字（播放器大封面用：等待开始播放）；nil 显示中性图标
-    var emptyHint: String? = nil
+    var showsWave = true
+    @Environment(\.colorScheme) private var colorScheme
 
-    // 布局尺寸完全由外层固定容器决定；AsyncImage 只放在 overlay 中渲染，
-    // 图片加载完成与否都不会改变任何布局尺寸（根治"封面加载后错乱"）。
     var body: some View {
+        let colors = CoverArt.colors(seed: seed, colorScheme: colorScheme)
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(Color.beansGlassFill)
+            .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
             .frame(width: size, height: size)
             .overlay {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                            .frame(width: size, height: size)
-                            .clipped()
-                    case .failure:
-                        placeholderIcon
-                    case .empty:
-                        if url == nil {
-                            // 封面地址为空时：直接显示占位图标，避免一直转圈
-                            placeholderIcon
-                        } else {
-                            ZStack {
-                                placeholderIcon
-                                ProgressView().tint(Color.beansAmber)
-                            }
-                        }
-                    @unknown default:
-                        placeholderIcon
-                    }
+                if showsWave {
+                    WaveformBadge(size: size, seed: seed)
                 }
-                .frame(width: size, height: size)
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(.white.opacity(0.16), lineWidth: 0.7)
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
+}
 
-    private var placeholderIcon: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(Color.beansGlassFill)
-            if let emptyHint {
-                Text(emptyHint)
-                    .font(BeansFont.appFont(max(11, min(size * 0.09, 15)), .medium))
-                    .foregroundStyle(Color.beansComment)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .padding(.horizontal, 8)
-            } else {
-                // 中性等待图标（不再使用音乐音符）
-                Image(systemName: "waveform")
-                    .font(.system(size: size * 0.28, weight: .medium))
-                    .foregroundStyle(Color.beansComment)
+private struct WaveformBadge: View {
+    let size: CGFloat
+    let seed: Int
+
+    var body: some View {
+        HStack(alignment: .center, spacing: max(1.5, size * 0.022)) {
+            ForEach(0..<9, id: \.self) { index in
+                let phase = sin(Double(abs(seed) % 97) * 0.19 + Double(index) * 0.9)
+                Capsule()
+                    .fill(.white.opacity(0.30))
+                    .frame(width: max(2, size * 0.03),
+                           height: size * (0.10 + 0.12 * abs(phase)))
             }
         }
         .frame(width: size, height: size)
     }
 }
 
-// MARK: - 会员标识小标（SVIP 金色 / VIP 红色）
-
-struct VIPBadgeView: View {
-    let text: String
-
-    var body: some View {
-        Text(text)
-            .font(BeansFont.appFont(9, .bold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1.5)
-            .background(Capsule().fill(text == "SVIP" ? Color(red: 0.85, green: 0.62, blue: 0.18) : Color(red: 0.93, green: 0.25, blue: 0.22)))
-    }
-}
-
-// MARK: - 玻璃图标按钮（清透 + 按压动效）
+// MARK: - 按钮
 
 struct GlassIconButton: View {
     @EnvironmentObject private var theme: ThemeStore
@@ -593,8 +428,6 @@ struct GlassIconButton: View {
         .buttonStyle(GlassPressButtonStyle())
     }
 }
-
-// MARK: - 玻璃按钮（清透 + 按压动效）
 
 struct GlassButton: View {
     @EnvironmentObject private var theme: ThemeStore
@@ -736,37 +569,7 @@ struct LoadingStateView: View {
     }
 }
 
-// MARK: - 二维码
-
-struct QRCodeView: View {
-    let text: String
-    var size: CGFloat = 220
-
-    var body: some View {
-        if let image = Self.generateQR(from: text) {
-            Image(uiImage: image)
-                .interpolation(.none)
-                .resizable()
-                .scaledToFit()
-                .frame(width: size, height: size)
-        } else {
-            EmptyView()
-        }
-    }
-
-    private static func generateQR(from text: String) -> UIImage? {
-        let context = CIContext()
-        let filter = CIFilter.qrCodeGenerator()
-        filter.message = Data(text.utf8)
-        filter.correctionLevel = "M"
-        guard let output = filter.outputImage else { return nil }
-        let scaled = output.transformed(by: CGAffineTransform(scaleX: 10, y: 10))
-        guard let cgImage = context.createCGImage(scaled, from: scaled.extent) else { return nil }
-        return UIImage(cgImage: cgImage)
-    }
-}
-
-// MARK: - 当前播放指示（均衡器动效）
+// MARK: - 当前播放指示
 
 struct NowPlayingIndicator: View {
     @EnvironmentObject private var theme: ThemeStore
@@ -819,25 +622,13 @@ struct ProgressLine: View {
                         )
                     )
                     .frame(width: max(geo.size.width * ratio, 6))
-                    .shadow(color: Color.beansAmber.opacity(0.5), radius: 3, y: 1)
-                    .overlay(alignment: .trailing) {
-                        ZStack {
-                            // 柔圆光晕（替代生硬方边阴影）
-                            Circle()
-                                .fill(Color.beansAmber.opacity(0.45))
-                                .blur(radius: 4)
-                                .frame(width: 14, height: 14)
-                            Circle()
-                                .fill(Color.beansAmber)
-                                .frame(width: 5, height: 5)
-                                .shadow(color: Color.beansAmber.opacity(0.8), radius: 2)
-                        }
-                    }
             }
         }
+        .frame(height: 3)
     }
 }
-// MARK: - 板块进入动画（首页错落渐入，纯视觉不影响布局）
+
+// MARK: - 板块进入动画
 
 struct SectionEntrance: ViewModifier {
     @State private var appeared = false
@@ -856,13 +647,12 @@ struct SectionEntrance: ViewModifier {
 }
 
 extension View {
-    /// 页面内板块错落渐入：opacity + 轻微上移，不影响布局
     func sectionEntrance(delay: Double = 0) -> some View {
         modifier(SectionEntrance(delay: delay))
     }
 }
 
-// MARK: - 全局轻提示（Toast，收藏/歌单等操作反馈用）
+// MARK: - 全局轻提示
 
 @MainActor
 final class ToastCenter: ObservableObject {
@@ -913,4 +703,58 @@ struct ToastView: View {
             .animation(.spring(response: 0.35, dampingFraction: 0.8), value: center.message)
             .allowsHitTesting(false)
     }
+}
+
+// MARK: - 弹窗尺寸
+
+enum BeansDetent {
+    case medium
+    case large
+    case fraction(CGFloat)
+    case height(CGFloat)
+}
+
+struct BeansSheetModifier: ViewModifier {
+    let detents: [BeansDetent]
+    var dragIndicator: Bool?
+
+    private func makeDetents() -> Set<PresentationDetent> {
+        var result: Set<PresentationDetent> = []
+        for detent in detents {
+            switch detent {
+            case .medium: result.insert(.medium)
+            case .large: result.insert(.large)
+            case .fraction(let f): result.insert(.fraction(f))
+            case .height(let h): result.insert(.height(h))
+            }
+        }
+        return result
+    }
+
+    func body(content: Content) -> some View {
+        if let dragIndicator {
+            content
+                .presentationDetents(makeDetents())
+                .presentationDragIndicator(dragIndicator ? .visible : .hidden)
+        } else {
+            content.presentationDetents(makeDetents())
+        }
+    }
+}
+
+// MARK: - 分享
+
+struct ShareFileItem: Identifiable {
+    let url: URL
+    var id: String { url.path }
+}
+
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }

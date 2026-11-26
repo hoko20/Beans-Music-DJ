@@ -1,316 +1,305 @@
+import Combine
 import Foundation
+import UIKit
 
-// MARK: - 下载音质
+// MARK: - 下载中心
 
-/// 下载复用第三方音源音质枚举，但与播放音质使用不同的 UserDefaults key。
-typealias DownloadQuality = ThirdPartyAudioQuality
+/// 一首已下载的歌曲（文件保存在「文件」App 的 Beans/BeansDownloads 目录）
+struct DownloadedTrack: Identifiable, Codable, Hashable {
+    let song: Song
+    let qualityRaw: Int
+    let fileName: String
+    let byteCount: Int64
+    let addedAt: Date
 
-extension ThirdPartyAudioQuality {
-    static var low: Self { .kb128 }
-    static var high: Self { .kb320 }
-    static var lossless: Self { .flac }
+    var id: String { song.identityKey }
 
-    var label: String { displayName }
+    var quality: DJddQuality { DJddQuality(rawValue: qualityRaw) ?? .high }
 
-    /// 网易云 player/url 的 level 参数。
-    var neteaseLevel: String {
-        switch self {
-        case .kb128: return "standard"
-        case .kb320: return "exhigh"
-        case .flac: return "lossless"
-        case .flac24bit, .hires, .atmos, .atmosPlus, .master: return "hires"
-        }
+    var fileURL: URL {
+        DownloadStore.directory.appendingPathComponent(fileName)
     }
 
-    /// QQ vkey 的 br 参数。高于 FLAC 的档位使用无损请求，第三方接口仍会
-    /// 收到原始质量名称并负责按能力降级。
-    var qqBR: String {
-        switch self {
-        case .kb128: return "M500"
-        case .kb320: return "M800"
-        case .flac, .flac24bit, .hires, .atmos, .atmosPlus, .master: return "F000"
-        }
-    }
+    var sizeText: String { DownloadStore.formattedBytes(byteCount) }
+}
 
-    /// 酷狗官方接口所能理解的质量档位。
-    var beansQuality: BeansAudioQuality {
-        switch self {
-        case .kb128: return .standard
-        case .kb320: return .exhigh
-        case .flac: return .lossless
-        case .flac24bit, .hires, .atmos, .atmosPlus, .master: return .hires
-        }
-    }
+/// 进行中的下载
+struct DownloadProgress: Identifiable, Equatable {
+    let songID: String
+    let songName: String
+    var received: Int64
+    var expected: Int64
+    var quality: DJddQuality
 
-    var defaultFileExtension: String {
+    var id: String { songID }
+
+    var fraction: Double {
+        guard expected > 0 else { return 0 }
+        return min(max(Double(received) / Double(expected), 0), 1)
+    }
+}
+
+enum DownloadError: LocalizedError {
+    case noURL
+    case http(Int)
+    case notAudio
+    case saveFailed(String)
+    case unknown(String)
+
+    var errorDescription: String? {
         switch self {
-        case .kb128, .kb320: return "mp3"
-        case .flac, .flac24bit, .hires, .atmos, .atmosPlus, .master: return "flac"
+        case .noURL: return "无法解析下载地址"
+        case .http(let code): return "下载失败（HTTP \(code)）"
+        case .notAudio: return "返回内容不是有效音频"
+        case .saveFailed(let msg): return "保存失败：\(msg)"
+        case .unknown(let msg): return msg
         }
     }
 }
 
-/// 下载结果（downgraded 表示目标音质不可用，已自动降级）
-struct DownloadResult {
-    let url: URL
-    let requestedQuality: DownloadQuality
-    let actualQuality: DownloadQuality
-    let downgraded: Bool
-    let sourceName: String?
-}
+/// 下载中心：下载四档音质到本机、进度、删除与体积统计。
+/// 下载完成后播放器优先播放本地文件，离线也能听。
+final class DownloadStore: NSObject, ObservableObject {
+    static let shared = DownloadStore()
 
-struct ResolvedDownloadURL {
-    let url: URL
-    let actualQuality: DownloadQuality
-    let sourceName: String?
-}
+    @Published private(set) var tracks: [DownloadedTrack] = []
+    @Published private(set) var active: [String: DownloadProgress] = [:]
+    @Published var lastError: String?
 
-// MARK: - 歌曲下载
+    private let tracksKey = "beans.downloads.tracks.v1"
+    private var taskMeta: [Int: (song: Song, quality: DJddQuality)] = [:]
+    private var session: URLSession!
 
-/// 下载歌曲到临时目录（不自动保存到本地）：下载完成后交给播放页弹原生分享，由用户自行选择保存或转发
-@MainActor
-final class DownloadManager {
-    static let shared = DownloadManager()
+    private override init() {
+        super.init()
+        loadTracks()
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 60 * 30
+        let queue = OperationQueue.main
+        queue.maxConcurrentOperationCount = 1
+        session = URLSession(configuration: config, delegate: self, delegateQueue: queue)
+    }
 
-    private init() {}
+    // MARK: 目录
 
-    @discardableResult
-    func download(song: Song, quality: DownloadQuality) async -> Result<DownloadResult, Error> {
-        let chain = quality.fallbackChain
-        var lastError: Error = NetEaseError.unknown("下载失败")
-        BeansLogger.shared.log(
-            "下载开始：\(song.name) 平台=\(song.source.rawValue) 请求音质=\(quality.rawValue)",
-            level: .info
+    static var directory: URL {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("BeansDownloads", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    static func formattedBytes(_ bytes: Int64) -> String {
+        guard bytes > 0 else { return "0 MB" }
+        let mb = Double(bytes) / 1_048_576
+        if mb >= 1024 { return String(format: "%.1f GB", mb / 1024) }
+        return String(format: "%.1f MB", mb)
+    }
+
+    var totalBytes: Int64 { tracks.reduce(0) { $0 + $1.byteCount } }
+
+    var totalSizeText: String { Self.formattedBytes(totalBytes) }
+
+    // MARK: 查询
+
+    func track(for song: Song) -> DownloadedTrack? {
+        tracks.first { $0.song.identityKey == song.identityKey }
+    }
+
+    func isDownloaded(_ song: Song) -> Bool {
+        guard let track = track(for: song) else { return false }
+        return FileManager.default.fileExists(atPath: track.fileURL.path)
+    }
+
+    func localURL(for song: Song) -> URL? {
+        guard let track = track(for: song),
+              FileManager.default.fileExists(atPath: track.fileURL.path) else { return nil }
+        return track.fileURL
+    }
+
+    func progress(for song: Song) -> DownloadProgress? {
+        active[song.identityKey]
+    }
+
+    // MARK: 下载
+
+    func download(song: Song, quality: DJddQuality? = nil) {
+        let wanted = quality ?? DJddQuality.downloadDefault
+        guard active[song.identityKey] == nil else { return }
+        if isDownloaded(song), track(for: song)?.qualityRaw == wanted.rawValue {
+            toast("已在下载中心：\(song.name)")
+            return
+        }
+        active[song.identityKey] = DownloadProgress(
+            songID: song.identityKey,
+            songName: song.name,
+            received: 0,
+            expected: 0,
+            quality: wanted
         )
-
-        for (index, current) in chain.enumerated() {
-            // 1) 解析播放地址（与播放共用同一套接口，仅指定当前下载音质）
-            guard let resolved = await resolveURL(song: song, quality: current) else {
-                lastError = NetEaseError.unknown("无法解析播放地址（可能为 VIP 歌曲或音源不可用）")
-                continue
-            }
-
-            // 2) 下载到临时文件
-            let tempURL: URL
-            let response: URLResponse
-            do {
-                let request = downloadRequest(for: resolved.url, song: song)
-                let (downloaded, downloadResponse) = try await URLSession.shared.download(for: request)
-                response = downloadResponse
-                if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                    lastError = NetEaseError.unknown("下载失败（HTTP \(http.statusCode)）")
-                    continue
+        Task { [weak self] in
+            guard let self else { return }
+            var resolvedQuality = wanted
+            var url: URL?
+            if let formats = try? await DJduoduoAPI.shared.formats(song: song), !formats.isEmpty {
+                let picked = formats.first { $0.quality == wanted.rawValue }
+                    ?? formats.filter { $0.quality <= wanted.rawValue }.max { $0.quality < $1.quality }
+                    ?? formats.min { $0.quality < $1.quality }
+                if let picked,
+                   let string = DJduoduoAPI.shared.downloadURL(format: picked, song: song) {
+                    url = URL(string: string)
+                    resolvedQuality = picked.tier
                 }
-                guard isUsableAudioFile(at: downloaded, response: response) else {
-                    lastError = NetEaseError.unknown("返回内容不是有效音频")
-                    BeansLogger.shared.log(
-                        "下载音频校验失败，继续尝试降级：\(song.name) 平台=\(song.source.rawValue) 音质=\(current.rawValue) MIME=\(response.mimeType ?? "未知")",
-                        level: .debug
-                    )
-                    try? FileManager.default.removeItem(at: downloaded)
-                    continue
+            }
+            if url == nil, let fallback = DJduoduoAPI.shared.defaultURL(song: song) {
+                url = URL(string: fallback)
+                resolvedQuality = .smooth
+            }
+            guard let url else {
+                await MainActor.run {
+                    self.finishWithError(song: song, message: "无法解析下载地址")
                 }
-                tempURL = downloaded
-            } catch {
-                lastError = NetEaseError.unknown("下载失败：\(error.localizedDescription)")
-                continue
+                return
             }
-
-            // 3) 保存到临时目录（不占用户存储；分享面板自带「存储到文件 / 转发」选项）
-            let dir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("BeansShare", isDirectory: true)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let safeName = "\(song.name) - \(song.artists)"
-                .replacingOccurrences(of: "/", with: "-")
-                .replacingOccurrences(of: ":", with: "-")
-            let actualQuality = resolved.actualQuality
-            let ext = fileExtension(for: resolved.url, response: response, quality: actualQuality)
-            let dest = dir.appendingPathComponent("\(safeName).\(ext)")
-            try? FileManager.default.removeItem(at: dest)
-            do {
-                try FileManager.default.moveItem(at: tempURL, to: dest)
-            } catch {
-                lastError = NetEaseError.unknown("保存失败：\(error.localizedDescription)")
-                continue
+            await MainActor.run {
+                self.active[song.identityKey]?.quality = resolvedQuality
+                self.startDownload(song: song, quality: resolvedQuality, url: url)
             }
-            let downgraded = index > 0 || actualQuality != quality
-            BeansLogger.shared.log(
-                "下载成功：\(song.name) 平台=\(song.source.rawValue) 请求音质=\(quality.rawValue) 实际音质=\(actualQuality.rawValue) 降级=\(downgraded ? "是" : "否") 地址=\(safeURLSummary(resolved.url))",
-                level: .info
-            )
-            return .success(
-                DownloadResult(
-                    url: dest,
-                    requestedQuality: quality,
-                    actualQuality: actualQuality,
-                    downgraded: downgraded,
-                    sourceName: resolved.sourceName
-                )
-            )
-        }
-        BeansLogger.shared.log(
-            "下载失败：\(song.name) 平台=\(song.source.rawValue) 请求音质=\(quality.rawValue) 所有候选质量均失败",
-            level: .error
-        )
-        return .failure(lastError)
-    }
-
-    private func resolveURL(song: Song, quality: DownloadQuality) async -> ResolvedDownloadURL? {
-        // ★ DJ多多：按 act=formats 的四档（游客态 Uid=-1）解析
-        //   路径前缀 dj / dj_nq / dj_hq / dj_sq（反汇编 0x100064808）
-        if song.source == .djduoduo {
-            let formats = (try? await DJduoduoAPI.shared.formats(song: song)) ?? []
-            guard !formats.isEmpty else { return nil }
-            let wanted = DJduoduoAPI.djQuality(for: quality)
-            let picked = formats.first { $0.quality == wanted }
-                ?? formats.filter { $0.quality <= wanted }.max { $0.quality < $1.quality }
-                ?? formats.min { $0.quality < $1.quality }
-            guard let picked,
-                  let s = DJduoduoAPI.shared.downloadURL(format: picked, song: song),
-                  let url = URL(string: s) else { return nil }
-            let actual: DownloadQuality = DJduoduoAPI.downloadQuality(forDJQuality: picked.quality)
-            return ResolvedDownloadURL(url: url, actualQuality: actual, sourceName: nil)
-        }
-        // 下载优先复用已配置的第三方音源，避免播放能用第三方而下载仍走官方地址。
-        let thirdPartyID = song.source == .netease ? song.id : 0
-        let thirdPartyKugouID = song.kugouHash ?? song.kugouAlbumAudioId
-        if let resolved = await UnblockService.resolve(
-            name: song.name,
-            artists: song.artists,
-            neteaseID: thirdPartyID,
-            songSource: song.source,
-            qqMid: song.qqMid,
-            qqMediaMid: song.qqMediaMid,
-            kugouID: thirdPartyKugouID,
-            quality: quality
-        ) {
-            BeansLogger.shared.log(
-                "下载使用第三方音源：\(song.name) 来源=\(resolved.source) 请求音质=\(quality.rawValue) 实际音质=\(resolved.quality.rawValue)",
-                level: .info
-            )
-            return ResolvedDownloadURL(
-                url: resolved.url,
-                actualQuality: resolved.quality,
-                sourceName: resolved.source
-            )
-        }
-
-        if song.source == .qq, let mid = song.qqMid {
-            guard let result = try? await QQMusicAPI.shared.songURLResult(
-                songmid: mid,
-                mediaMid: song.qqMediaMid,
-                quality: quality.beansQuality
-            ),
-            let url = URL(string: result.url) else { return nil }
-            return ResolvedDownloadURL(
-                url: url,
-                actualQuality: Self.downloadQuality(forQQBR: result.br),
-                sourceName: nil
-            )
-        } else if song.source == .kugou {
-            guard let urlString = try? await KugouMusicAPI.shared.songURL(song: song, quality: quality.beansQuality),
-                  let url = URL(string: urlString) else { return nil }
-            return ResolvedDownloadURL(url: url, actualQuality: quality, sourceName: nil)
-        } else {
-            let urls = try? await NetEaseAPI.shared.songURLs(ids: [song.id], level: quality.neteaseLevel)
-            guard let urlString = urls?[song.id], let url = URL(string: urlString) else { return nil }
-            return ResolvedDownloadURL(url: url, actualQuality: quality, sourceName: nil)
         }
     }
 
-    private func downloadRequest(for url: URL, song: Song) -> URLRequest {
+    private func startDownload(song: Song, quality: DJddQuality, url: URL) {
         var request = URLRequest(url: url)
-        request.timeoutInterval = 30
-        request.setValue("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:80.0) Gecko/20100101 Firefox/80.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("DJDuoduo/4.3.7 (iPhone; iOS 26.0; Scale/3.00)",
+                         forHTTPHeaderField: "User-Agent")
+        let task = session.downloadTask(with: request)
+        taskMeta[task.taskIdentifier] = (song, quality)
+        task.resume()
+        BeansLogger.shared.log("下载开始：\(song.name)｜\(quality.title)", level: .info)
+    }
 
-        if isQQHost(url.host) {
-            request.setValue("https://y.qq.com/", forHTTPHeaderField: "Referer")
-            let cookie = QQMusicAuth.shared.cookieHeader
-            if !cookie.isEmpty {
-                request.setValue(cookie, forHTTPHeaderField: "Cookie")
+    private func finishWithError(song: Song, message: String) {
+        active.removeValue(forKey: song.identityKey)
+        lastError = message
+        toast("下载失败：\(message)", duration: 3)
+        BeansLogger.shared.log("下载失败：\(song.name)｜\(message)", level: .error)
+    }
+
+    // MARK: 本地记录
+
+    private func loadTracks() {
+        guard let data = UserDefaults.standard.data(forKey: tracksKey),
+              let saved = try? JSONDecoder().decode([DownloadedTrack].self, from: data) else { return }
+        tracks = saved.filter { FileManager.default.fileExists(atPath: $0.fileURL.path) }
+    }
+
+    private func saveTracks() {
+        if let data = try? JSONEncoder().encode(tracks) {
+            UserDefaults.standard.set(data, forKey: tracksKey)
+        }
+    }
+
+    func delete(_ track: DownloadedTrack) {
+        try? FileManager.default.removeItem(at: track.fileURL)
+        tracks.removeAll { $0.id == track.id }
+        saveTracks()
+    }
+
+    func delete(at offsets: IndexSet) {
+        for index in offsets.sorted(by: >) where tracks.indices.contains(index) {
+            delete(tracks[index])
+        }
+    }
+
+    func deleteAll() {
+        for track in tracks {
+            try? FileManager.default.removeItem(at: track.fileURL)
+        }
+        tracks.removeAll()
+        saveTracks()
+    }
+
+    /// 已下载文件导出（分享面板）
+    func exportURL(for track: DownloadedTrack) -> URL? {
+        FileManager.default.fileExists(atPath: track.fileURL.path) ? track.fileURL : nil
+    }
+
+    /// 主线程提示（下载回调可能来自 URLSession 队列）
+    private func toast(_ text: String, duration: Double = 2.2) {
+        Task { @MainActor in
+            ToastCenter.shared.show(text, duration: duration)
+        }
+    }
+}
+
+// MARK: - URLSessionDownloadDelegate
+
+extension DownloadStore: URLSessionDownloadDelegate {
+
+    func urlSession(_ session: URLSession,
+                    downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64,
+                    totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
+        guard let meta = taskMeta[downloadTask.taskIdentifier] else { return }
+        let key = meta.song.identityKey
+        guard var progress = active[key] else { return }
+        progress.received = totalBytesWritten
+        progress.expected = totalBytesExpectedToWrite
+        active[key] = progress
+    }
+
+    func urlSession(_ session: URLSession,
+                    downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {
+        guard let meta = taskMeta.removeValue(forKey: downloadTask.taskIdentifier) else { return }
+        let song = meta.song
+        let key = song.identityKey
+        let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200...299).contains(status) else {
+            finishWithError(song: song, message: "HTTP \(status)")
+            return
+        }
+        let suggested = downloadTask.response?.suggestedFilename ?? location.lastPathComponent
+        let ext = (suggested as NSString).pathExtension
+        let safeExtension = ext.isEmpty ? "mp3" : ext
+        let baseName = "\(song.name) - \(song.artists)"
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        let trimmedName = String(baseName.prefix(60))
+        let fileName = "\(song.id)-\(meta.quality.rawValue)-\(trimmedName).\(safeExtension)"
+        let dest = DownloadStore.directory.appendingPathComponent(fileName)
+        do {
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
             }
-        } else if url.host?.lowercased().contains("kugou") == true
-                    || url.host?.lowercased().contains("kgimg.com") == true {
-            request.setValue("https://www.kugou.com/", forHTTPHeaderField: "Referer")
-            let cookie = KugouMusicAuth.shared.cookieHeader
-            if !cookie.isEmpty {
-                request.setValue(cookie, forHTTPHeaderField: "Cookie")
+            // 同曲目换档位时清掉旧文件，避免占用双倍空间
+            if let old = tracks.first(where: { $0.id == key }), old.fileURL != dest {
+                try? FileManager.default.removeItem(at: old.fileURL)
             }
-        }
-        return request
-    }
-
-    private func isQQHost(_ host: String?) -> Bool {
-        guard let host = host?.lowercased() else { return false }
-        return host.contains("qq.com")
-            || host.contains("qqmusic")
-            || host.contains("ptqqmusic")
-            || host.contains("gitv.tv")
-    }
-
-    private static func downloadQuality(forQQBR br: String) -> DownloadQuality {
-        switch br.uppercased() {
-        case "M500": return .kb128
-        case "M800": return .kb320
-        case "C400": return .kb320
-        case "F000": return .flac
-        default: return .kb128
+            try FileManager.default.moveItem(at: location, to: dest)
+            let size = (try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? NSNumber)?.int64Value ?? 0
+            tracks.removeAll { $0.id == key }
+            tracks.insert(
+                DownloadedTrack(song: song, qualityRaw: meta.quality.rawValue,
+                                fileName: fileName, byteCount: size, addedAt: Date()),
+                at: 0
+            )
+            saveTracks()
+            active.removeValue(forKey: key)
+            toast("已下载：\(song.name)（\(meta.quality.title)）")
+            BeansLogger.shared.log("下载完成：\(song.name)｜\(meta.quality.title)", level: .info)
+        } catch {
+            finishWithError(song: song, message: error.localizedDescription)
         }
     }
 
-    private func fileExtension(for url: URL, response: URLResponse, quality: DownloadQuality) -> String {
-        if let mimeType = response.mimeType?.lowercased() {
-            if mimeType.contains("flac") { return "flac" }
-            if mimeType.contains("mpeg") || mimeType.contains("mp3") { return "mp3" }
-            if mimeType.contains("mp4") || mimeType.contains("m4a") { return "m4a" }
-            if mimeType.contains("aac") { return "aac" }
-            if mimeType.contains("ogg") { return "ogg" }
-            if mimeType.contains("wav") { return "wav" }
-        }
-
-        let knownExtensions = Set(["mp3", "m4a", "flac", "aac", "ogg", "wav"])
-        let urlExtension = url.pathExtension.lowercased()
-        if knownExtensions.contains(urlExtension) {
-            return urlExtension
-        }
-        if let suggestedFilename = response.suggestedFilename,
-           let responseExtension = suggestedFilename.split(separator: ".").last.map({ String($0).lowercased() }),
-           knownExtensions.contains(responseExtension) {
-            return responseExtension
-        }
-        return quality.defaultFileExtension
-    }
-
-    /// 防止接口返回 HTTP 200 的 JSON/HTML 错误页被保存为歌曲，并阻断音质降级。
-    private func isUsableAudioFile(at url: URL, response: URLResponse) -> Bool {
-        if let mimeType = response.mimeType?.lowercased(),
-           mimeType.contains("text/") || mimeType.contains("json") || mimeType.contains("html") {
-            return false
-        }
-
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let fileSize = attributes[.size] as? NSNumber,
-              fileSize.int64Value > 1024 else {
-            return false
-        }
-
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return true }
-        defer { try? handle.close() }
-        let prefix = (try? handle.read(upToCount: 64)) ?? Data()
-        guard !prefix.isEmpty else { return false }
-        let text = String(data: prefix, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? ""
-        return !text.hasPrefix("{")
-            && !text.hasPrefix("[")
-            && !text.hasPrefix("<html")
-            && !text.hasPrefix("<!doctype")
-    }
-
-    private func safeURLSummary(_ url: URL) -> String {
-        let host = url.host ?? "?"
-        let path = url.path.isEmpty ? "/" : url.path
-        let shortPath = path.count > 64 ? String(path.prefix(64)) + "..." : path
-        return "\(host)\(shortPath)"
+    func urlSession(_ session: URLSession,
+                    task: URLSessionTask,
+                    didCompleteWithError error: Error?) {
+        guard let error else { return }
+        guard let meta = taskMeta.removeValue(forKey: task.taskIdentifier) else { return }
+        finishWithError(song: meta.song, message: error.localizedDescription)
     }
 }

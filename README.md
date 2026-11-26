@@ -1,49 +1,50 @@
-# Beans Music
+# Beans Music DJ
 
-Beans Music is an open-source SwiftUI music player for iOS 15 and later. It brings several music platforms, local playlists, lyrics, downloads, and a highly configurable player into one native app.
+一个只接入 **DJ多多** 的 iOS 26 SwiftUI 音乐播放器。
 
-This repository contains the public iOS client.
+基于开源 [XIaodou0416/Beans-Music](https://github.com/XIaodou0416/Beans-Music) 1.6.6 精简重构：
+保留 Beans 的液态玻璃视觉、播放内核、下载、收藏与队列能力，删掉取不到数据的平台、账号与同步层，
+只留一条链路：**看列表 → 播 → 存**。
 
-## Highlights
+- 仓库：https://github.com/hoko20/Beans-Music-DJ
+- 构建产物：`Beans-unsigned.ipa`（未签名，需 AltStore / Sideloadly / 爱思自签安装）
+- 系统要求：iOS 26.0+，仅 iPhone，仅中文
 
-- NetEase Cloud Music, QQ Music, and Kugou Music browsing and search
-- Account login, synced playlists, favorites, rankings, artists, albums, and recent plays
-- Playback queue, shuffle, repeat, playback speed, sleep timer, background playback, and lock-screen controls
-- Lyrics with translation, appearance controls, scrolling, and interactive seeking
-- Multiple player layouts, Liquid Glass styling on supported systems, themes, wallpapers, and equalizer controls
-- Local playlists, offline files, importable music sources, and native share/export flows
-- Chinese and English localization
+## 功能
 
-## Project Layout
+- 15 个分类浏览与切换，列表上拉分页（30 首 / 页）
+- 跨 6 个分类聚合的标题 / 上传者搜索
+- 播放 / 暂停、上下首、进度拖动与快进快退、上下滑切歌
+- 顺序 / 单曲 / 随机、倍速 0.5–2.0、睡眠定时
+- 四档音质（流畅 80k / 标准 128k / 高品 320k / 无损 FLAC）播放与下载
+- 下载中心：实时进度、体积统计、导出分享、删除；已下载自动离线播放
+- 红心收藏、本地歌单、最近播放、播放队列
+- 程序化封面（按歌曲 ID 生成渐变 + 波形）、封面主色联动、节奏光环
+- 9 套主题色、深浅模式、壁纸导入、均衡器、备份恢复
+- 后台播放、锁屏 / 控制中心控制、高刷新率保持
+
+## 工程结构
 
 ```
 Beans/
-  BeansApp.swift              Application entry point
-  RootView.swift              Tab navigation and mini player
-  DiscoverView.swift          Home, recommendations, and rankings
-  SearchView.swift            Platform search and result navigation
-  LibraryView.swift           Synced and local music libraries
-  ProfileView.swift           Account, appearance, backup, and settings
-  PlayerView.swift            Full player and lyrics experience
-  PlayerManager.swift         Queue, playback, history, and recovery
-  NetEaseAPI.swift            NetEase integration
-  QQMusicAPI.swift            QQ Music integration
-  KugouMusicAPI.swift         Kugou integration
-  UnblockService.swift        User-configured source resolution
-  DownloadManager.swift       Audio download and export
-  Theme.swift                 Theme and wallpaper state
-  Models.swift                Shared models and enums
+  BeansApp.swift       应用入口
+  RootView.swift       3 Tab + 迷你播放器
+  DiscoverView.swift   15 分类 + 双列卡片 + 分页
+  SearchView.swift     搜索浮层（聚合 + 本地过滤）
+  LibraryView.swift    红心 / 下载中心 / 历史 / 本地歌单
+  ProfileView.swift    本机数据、均衡器、外观、备份、设置
+  PlayerView.swift     播放页 + 音质面板
+  PlayerManager.swift  播放内核、队列、历史、定时
+  DJduoduoAPI.swift    DJ多多协议（加密 / 分类 / 列表 / 音质 / 下载）
+  DownloadManager.swift 下载中心 DownloadStore
+  Components.swift     液态玻璃组件、程序化封面、Toast
+  Models.swift         DJddQuality / Song
+  Theme.swift          主题、壁纸、配色
 ```
 
-## Build
+## 构建
 
-Requirements:
-
-- macOS
-- Xcode 26 or later
-- XcodeGen
-
-Generate the project and build an unsigned app:
+需要 macOS、Xcode 26 或更新版本、XcodeGen：
 
 ```bash
 brew install xcodegen
@@ -60,17 +61,13 @@ xcodebuild \
   build
 ```
 
-The GitHub Actions workflow can build an unsigned IPA on demand. The workflow is configured for test builds by default and does not create a release unless explicitly enabled.
+GitHub Actions 工作流 `build-unsigned-ipa.yml` 可在 `macos-26` 上打包未签名 IPA。
 
-## Development Notes
+## 免责声明
 
-- The project uses SwiftUI and keeps platform-specific networking inside the corresponding API files.
-- User-configured music sources are stored locally and are not bundled with this repository.
-- Do not commit credentials, cookies, API keys, personal files, build artifacts, or local configuration.
-- Keep changes focused and verify `git diff --check` before opening a pull request.
+本应用仅供个人学习与研究，禁止商业及非法用途。歌曲、分类、音质均来自 DJ多多公开接口，
+本应用不存储、不传播任何音频内容，音乐版权归各平台与权利人所有，请支持正版。
 
 ## License
 
-This project is distributed under the MIT License. See [LICENSE](LICENSE).
-
-Music, trademarks, and platform services belong to their respective owners. Use the app responsibly and follow each platform's terms of service.
+MIT License，见 [LICENSE](LICENSE)。

@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 /// 搜索历史：最近搜索记录，UserDefaults 持久化，最多保留 20 条（按最近优先去重）

@@ -1,27 +1,21 @@
 import SwiftUI
 
+/// 列表歌曲行（音乐库 / 历史 / 搜索结果通用）
 struct SongCell: View {
     @EnvironmentObject private var theme: ThemeStore
     @EnvironmentObject private var player: PlayerManager
-    @EnvironmentObject private var auth: AuthStore
+    @ObservedObject private var favorites = FavoritesStore.shared
+    @ObservedObject private var downloads = DownloadStore.shared
     @AppStorage("beans.uiStyle") private var uiStyleRaw = BeansUIStyle.liquid.rawValue
-    @AppStorage("beans.showSongVIPBadge") private var showSongVIPBadge = true
-    @AppStorage(ThirdPartyAudioQuality.downloadStorageKey) private var downloadQualityRaw = ThirdPartyAudioQuality.kb320.rawValue
-    private let downloadFeatureUnlocked = true
 
     let song: Song
     var showCover = true
-    /// 玻璃行模式：为行添加清透液态玻璃底（二级列表页统一风格用）
-    var glassRow = false
-    /// 需要整体玻璃容器时，单行保持纯净背景
-    var suppressNativeCleanRowGlass = false
     var playbackContext: [Song] = []
     var playbackIndex: Int?
     var onTap: (() -> Void)?
 
     @State private var showAddToPlaylist = false
-    @State private var shareFile: ShareFileItem?
-    @State private var appeared = false
+    @State private var showQualityPicker = false
 
     private var isCurrent: Bool {
         player.currentSong?.identityKey == song.identityKey
@@ -34,7 +28,7 @@ struct SongCell: View {
     private var rowContent: some View {
         HStack(spacing: 12) {
             if showCover {
-                CoverImage(url: song.coverURL, size: 46, cornerRadius: 10)
+                SongCover(seed: song.coverSeed, size: 46, cornerRadius: 10)
             }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -43,25 +37,26 @@ struct SongCell: View {
                         .foregroundStyle(isCurrent ? Color.beansAmber : Color.beansLabel)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-                    if showSongVIPBadge, song.isVIP {
-                        Text("VIP")
-                            .font(BeansFont.appFont(9, .bold))
+                    if let tag = song.qualityTag {
+                        Text(tag)
+                            .font(.system(size: 8, weight: .bold, design: .rounded))
                             .foregroundStyle(.white)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1.5)
-                            .background(Capsule().fill(Color(red: 0.93, green: 0.25, blue: 0.22)))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.beansAmber.opacity(0.8)))
                     }
                 }
-                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-                Text(song.artists.isEmpty ? song.album : song.artists)
+                Text(song.artists.isEmpty ? "DJ多多" : song.artists)
                     .font(BeansFont.appFont(12))
                     .foregroundStyle(Color.beansComment)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                if downloads.isDownloaded(song) {
+                    Text("已下载")
+                        .font(BeansFont.appFont(10, .medium))
+                        .foregroundStyle(Color.beansSage)
+                }
             }
-            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 0)
             if isCurrent && player.isPlaying {
                 NowPlayingIndicator()
@@ -74,90 +69,124 @@ struct SongCell: View {
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 6)
         .contentShape(Rectangle())
-        .scaleEffect(isCurrent ? 1.012 : 1)
-        .animation(.spring(response: 0.28, dampingFraction: 0.86), value: isCurrent)
         .onTapGesture {
-            onTap?()
+            if let onTap {
+                onTap()
+            } else {
+                play()
+            }
         }
         .contextMenu {
+            Button {
+                play()
+            } label: {
+                Label("立即播放", systemImage: "play.fill")
+            }
             Button {
                 player.playNext(song)
             } label: {
                 Label("下一首播放", systemImage: "text.line.first.and.arrowtriangle.forward")
             }
             Button {
+                let liked = favorites.toggle(song)
+                ToastCenter.shared.show(liked ? "已收藏" : "已取消收藏")
+            } label: {
+                Label(favorites.isLiked(song) ? "取消收藏" : "收藏", systemImage: favorites.isLiked(song) ? "heart.slash" : "heart")
+            }
+            Button {
                 showAddToPlaylist = true
             } label: {
                 Label("添加到歌单", systemImage: "text.badge.plus")
             }
-            if downloadFeatureUnlocked {
-                Button {
-                    Task { await downloadSong() }
-                } label: {
-                    Label("下载歌曲", systemImage: "arrow.down.circle")
-                }
-            }
-            if !isCurrent {
-                Button {
-                    if let playbackIndex, !playbackContext.isEmpty {
-                        player.play(songs: playbackContext, startAt: playbackIndex)
-                    } else if let index = player.queue.firstIndex(of: song) {
-                        player.playQueueIndex(index)
-                    } else {
-                        player.play(songs: [song], startAt: 0)
-                    }
-                } label: {
-                    Label("立即播放", systemImage: "play.fill")
-                }
+            Button {
+                showQualityPicker = true
+            } label: {
+                Label("下载", systemImage: "arrow.down.circle")
             }
         }
         .sheet(isPresented: $showAddToPlaylist) {
             AddToLocalPlaylistSheet(song: song)
-                .environmentObject(theme)
         }
-        .sheet(item: $shareFile) { item in
-            ShareSheet(items: [item.url])
+        .sheet(isPresented: $showQualityPicker) {
+            DownloadQualitySheet(song: song)
         }
     }
 
-    @MainActor
-    private func downloadSong() async {
-        let quality: DownloadQuality
-        if UserDefaults.standard.object(forKey: ThirdPartyAudioQuality.downloadStorageKey) == nil {
-            quality = ThirdPartyAudioQuality.current
+    private func play() {
+        if let index = playbackIndex, playbackContext.indices.contains(index) {
+            player.play(songs: playbackContext, startAt: index)
+        } else if let index = player.queue.firstIndex(where: { $0.identityKey == song.identityKey }) {
+            player.playQueueIndex(index)
         } else {
-            quality = DownloadQuality(sourceValue: downloadQualityRaw) ?? ThirdPartyAudioQuality.current
-        }
-        BeansHaptics.medium()
-        ToastCenter.shared.show("开始下载：\(song.name)（\(quality.displayName)）")
-        let result = await DownloadManager.shared.download(song: song, quality: quality)
-        switch result {
-        case .success(let downloaded):
-            if downloaded.downgraded {
-                ToastCenter.shared.show("目标音质不可用，已降级为 \(downloaded.actualQuality.displayName)", duration: 3)
-            }
-            shareFile = ShareFileItem(url: downloaded.url)
-        case .failure(let error):
-            ToastCenter.shared.show("下载失败：\(error.localizedDescription)", duration: 3)
+            player.play(songs: [song], startAt: 0)
         }
     }
 
     var body: some View {
         let _ = theme.accent
-        Group {
-        if glassRow || (isNativeClean && !suppressNativeCleanRowGlass) {
-                rowContent
-                    .padding(.horizontal, 10)
-                    .background {
-                                            BeansGlass(shape: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        rowContent
+            .padding(.horizontal, isNativeClean ? 10 : 0)
+            .background {
+                if isNativeClean {
+                    BeansGlass(shape: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+            }
+    }
+}
+
+// MARK: - 下载音质选择
+
+struct DownloadQualitySheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var theme: ThemeStore
+    let song: Song
+
+    var body: some View {
+        let _ = theme.accent
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                SongCover(seed: song.coverSeed, size: 46, cornerRadius: 10)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(song.name)
+                        .font(BeansFont.appFont(16, .semibold))
+                        .foregroundStyle(Color.beansLabel)
+                        .lineLimit(1)
+                    Text("选择下载音质")
+                        .font(BeansFont.appFont(12))
+                        .foregroundStyle(Color.beansComment)
+                }
+                Spacer()
+            }
+            ForEach(DJddQuality.allCases) { quality in
+                Button {
+                    DownloadStore.shared.download(song: song, quality: quality)
+                    dismiss()
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(quality.title)
+                                .font(BeansFont.appFont(15, .medium))
+                                .foregroundStyle(Color.beansLabel)
+                            Text(quality.summary)
+                                .font(BeansFont.appFont(11))
+                                .foregroundStyle(Color.beansComment)
+                        }
+                        Spacer()
+                        if quality == DJddQuality.downloadDefault {
+                            Text("默认")
+                                .font(BeansFont.appFont(10, .semibold))
+                                .foregroundStyle(Color.beansAmber)
+                        }
+                        Image(systemName: "arrow.down.circle")
+                            .foregroundStyle(Color.beansAmber)
                     }
-            } else {
-                rowContent
+                    .padding(.vertical, 8)
+                }
+                .buttonStyle(.plain)
             }
         }
-        .opacity(appeared ? 1 : 0)
-        .offset(y: appeared ? 0 : 8)
-        .animation(.easeOut(duration: 0.28), value: appeared)
-        .onAppear { appeared = true }
+        .padding(20)
+        .presentationDetents([.height(360)])
+        .presentationDragIndicator(.visible)
     }
 }

@@ -1,40 +1,53 @@
-# Beans Music + DJ多多平台接入说明
+# Beans Music DJ + DJ多多平台接入说明
 
 本项目基于开源 [XIaodou0416/Beans-Music](https://github.com/XIaodou0416/Beans-Music) 1.6.6，
-新增第四个音乐平台「DJ多多」（逆向自 DJ多多 4.3.7），完整复用 Beans 现成的
-SwiftUI 液态玻璃 UI、播放器、下载、歌词、收藏、队列等能力。
+在 2.0.0 中收敛为 **DJ多多单平台** 播放器（逆向自 DJ多多 4.3.7），完整复用 Beans 的
+SwiftUI 液态玻璃 UI、播放器、下载、收藏、队列等能力。
 
 - 仓库：https://github.com/hoko20/Beans-Music-DJ
 - 构建产物：`Beans-unsigned.ipa`（未签名，需 AltStore / Sideloadly / 爱思自签安装）
-- 编译状态：GitHub Actions `macos-26` 已构建通过（最新 run 45567210062，含 15 分类）
+- 系统要求：iOS 26.0+，仅 iPhone，仅中文
 
 ---
 
 ## 怎么用
 
-1. 发现页 / 搜索页顶部的平台选择器，切换到「DJ多多」（橙红渐变 + 波形图标）。
-2. 发现页切到 DJ多多后，顶部出现 15 个分类横向选择器（最热/最新/电音/无损专区/车载/粤语/彩铃/儿歌/中文/外文/伤感/3D/DJ/铃声/老歌），点选即切换列表。
-3. 搜索页支持歌曲名 / 作者本地过滤（服务端 search act 参数未破解）。
-4. 点歌曲进入 Beans 原生播放页，支持播放/暂停、上一首下一首、进度拖动、后台播放、歌词面板。
-5. 下载、红心收藏均可正常使用，收藏本地持久化（无云端接口）。
+1. 首次启动完成免责确认（输入「我已了解并同意」）。
+2. 主页顶部是 15 个分类胶囊（最热/最新/电音/无损专区/车载/粤语/彩铃/儿歌/中文/外文/伤感/3D/DJ/铃声/老歌），
+   点选即切换列表，双列卡片上拉自动加载下一页。
+3. 点顶栏放大镜或搜索框进入搜索浮层：最近搜索、15 分类直达、跨 6 个分类聚合过滤。
+4. 点卡片直接播放；长按卡片可下一首播放 / 收藏 / 下载。
+5. 播放页点「音质」打开四档面板，可切换播放音质或下载对应档位。
+6. 音乐库 → 已下载：查看进度、占用空间、导出分享、删除；已下载歌曲自动离线播放。
 
 ---
 
-## 接入改动清单
+## 2.0.0 结构与取舍
 
-| 文件 | 改动 |
+| 保留 | 移除 |
 |---|---|
-| `Beans/DJduoduoAPI.swift` | **新增**。DJddCrypto（MD5/AES-CBC/URL 编码/Path 解密）+ DJddCategory + 单例 API（分类/列表/下载/封面/搜索） |
-| `Beans/Models.swift` | `SongSource` 加 `.djduoduo`；`Song` 加 `djduoduoPath` / `djduoduoUserId` 字段（含 Codable）；音质档位、`identityKey`、`isVIP` 补 case |
-| `Beans/SearchView.swift` | `SearchProvider` 加 case + 主题色/图标；搜索 12 分支 switch、专辑兜底、热搜词分派补 DJdd |
-| `Beans/LibraryView.swift` | `LibraryProvider` 加 case；新增 `djduoduoSection` 显示本地红心歌曲 |
-| `Beans/PlayerManager.swift` | `loadCurrent()` 加 DJdd 播放 URL 分支；第三方音源/会员判断补 case |
-| `Beans/DownloadManager.swift` | `resolveURL()` 加 DJdd 下载 URL 分支 |
-| `Beans/FavoritesStore.swift` | 新增 DJdd 本地红心数组与持久化 |
-| `Beans/DiscoverView.swift` | 首页 load switch 加 DJdd 推荐流；排行榜/歌单文案补 case |
-| 其余 8 个文件 | `Language` / `PlatformPreferenceStore` / `PlayerView` / `PlaylistView` / `ProfileView` / `UnblockService` / `LocalMusicSection` / `LXScriptSourceRunner` 补 switch 穷举 |
+| DJduoduoAPI（加密/分类/列表/音质/下载） | 网易云 / QQ / 酷狗 API 与三套鉴权 |
+| 播放内核、队列、睡眠定时、均衡器 | 账号登录、扫码、网页登录、Cookie 导入 |
+| 四档音质播放与下载、下载中心 | 云端歌单同步、每日推荐、排行榜、歌手页、评论 |
+| 红心收藏、本地歌单、最近播放 | 在线歌词与歌词面板 |
+| 9 套主题、壁纸、字体、备份恢复 | 第三方音源（解锁服务、LX 脚本） |
+| 程序化封面、节奏光环、液态玻璃 | iOS 15–18 兼容分支、自绘底栏、英文语言包 |
 
-`project.yml` 的 `sources: [Beans]` 自动纳入新 `.swift`，无需手动登记；ATS 已 `NSAllowsArbitraryLoads: true`，
+主要文件：
+
+| 文件 | 职责 |
+|---|---|
+| `Beans/DJduoduoAPI.swift` | DJddCrypto（MD5/AES-CBC/URL 编码/Path 解密）+ 分类 / 列表 / 音质 / 搜索 |
+| `Beans/Models.swift` | `DJddQuality`（四档）、`Song`（含旧数据兼容解码） |
+| `Beans/DownloadManager.swift` | `DownloadStore` 下载中心（进度、体积、导出、删除） |
+| `Beans/PlayerManager.swift` | 本地优先播放、音质切换、队列、历史、定时 |
+| `Beans/DiscoverView.swift` | 15 分类 + 双列卡片 + 分页 |
+| `Beans/SearchView.swift` | 搜索浮层（聚合 6 分类 + 本地过滤） |
+| `Beans/LibraryView.swift` | 红心 / 下载中心 / 历史 / 本地歌单 |
+| `Beans/ProfileView.swift` | 本机数据、均衡器、外观、备份、设置 |
+| `Beans/PlayerView.swift` | 播放页 + 音质与下载面板 |
+
+`project.yml` 的 `sources: [Beans]` 自动纳入新 `.swift`；ATS 已 `NSAllowsArbitraryLoads: true`，
 DJdd CDN 是 `http://bdcdn.djduoduo.com`，可直接播放/下载。
 
 ---
@@ -46,34 +59,34 @@ DJdd CDN 是 `http://bdcdn.djduoduo.com`，可直接播放/下载。
 参数  ?act=<动作>&data=<base64(AES)>&extra=<base64(AES)>
 
 分类  act=listtab   data={"PageNo":0,"type":"home"} → 首页 15 项
-      不带 type / type="ring"                      → 彩铃 tab 仅 3 项（112/115/116）
 列表  act=<分类Act> data={"PageNo":p,"Id":分类Id}  → RetCode=200 Count=30
       最热/最新/无损专区 id=0 → 只传 act=hot/new/sq，不带 Id
-音质  act=formats   data={"Id":歌曲Id,"Uid":Uid,
-                          "OpenId":OpenId,"Status":状态}
+音质  act=formats   data={"Id":歌曲Id,"Uid":Uid,"OpenId":OpenId,"Status":状态}
       ★ Uid=-1 即游客态 → RetCode=200 四档全返回（无需登录）
       响应 Item.Formats[]：Quality / Size / Bitrate / Path(加密，同媒体 key)
-      档位 0 流畅 / 1 标准 / 2 高品 / 3 无损
+      档位 0 流畅 80k / 1 标准 128k / 2 高品 320k / 3 无损 1155k FLAC
 下载  CDN/{Quality前缀}/{Id%1000补3位}/{Path解密文件名}
       前缀 0→dj  1→dj_nq  2→dj_hq  3→dj_sq
-      实测 高品 …/dj_hq/192/jhyps3.mp3 → 200，52.1MB，320k/48kHz
-封面  CDN/v/cover/{Id%1000补3位}/{UserId}/{Cover}
+搜索  服务端 act=search 未开放 → 6 个分类首页聚合 + 本地过滤
+封面  接口各模板实测 404 → 客户端按歌曲 Id 生成渐变封面 + 波形
+歌词  act=lyric 为独立第五套密钥，未破解 → 不做歌词
+```
 
-AES   AES-128-CBC + PKCS7
-      key = MD5("slf2yoDUOr3diocu")  iv = MD5("2mhamCk1helsrT")   (data/extra)
-      key = MD5("sdf2goDUOdjumogu")  iv = MD5("2ghlmCl1hblsqT")   (Path→文件名)
-      明文 NSJSONSerialization(prettyPrinted) 风格；base64 后 + / = 全部 %XX
-      ★ 不缓存 Sign：列表接口带 Sign 会返回 403「请升级」
+AES：
+
+```
+AES-128-CBC + PKCS7
+key = MD5("slf2yoDUOr3diocu")  iv = MD5("2mhamCk1helsrT")   (data/extra)
+key = MD5("sdf2goDUOdjumogu")  iv = MD5("2ghlmCl1hblsqT")   (Path→文件名)
+明文 NSJSONSerialization(prettyPrinted) 风格；base64 后 + / = 全部 %XX
+★ 不缓存 Sign：列表接口带 Sign 会返回 403「请升级」
 ```
 
 ### 已知限制
 
-- **搜索**：服务端 `act=search` 参数未破解，用前 4 个分类列表本地过滤兜底。
-- **音质选择**：✅ 已完全打通。`DJduoduoAPI.formats()` 用游客态 `Uid=-1` 取四档，
-  `downloadURL(format:song:)` 按 Quality 前缀目录拼地址，`DownloadManager` 的 DJdd 分支
-  已按请求音质映射档位并自动降级。逆向证据见
-  `../DJdd的API接口算法/08_文档/12_formats登录态与三档音质.md`。
-- **歌词**：服务端 `act=lyric` 是独立第五套密钥，已按需求停止分析；Beans 自带本地 LRC 解析能力保留，DJdd 歌曲无在线歌词。
-- **排行榜 / 云端歌单**：DJdd 无对应接口，相关区域显示为空或本地红心。
+- **搜索**：服务端 `act=search` 未开放，命中率受已加载分类限制，界面已标注「标题 / 上传者命中」。
+- **封面**：接口封面模板全部 404，改用程序化渐变封面。
+- **歌词**：不提供（独立密钥未破解）。
+- **排行榜 / 云端歌单 / 歌手页 / 评论**：DJdd 无对应接口，已从界面移除。
 - **收藏**：本地持久化（`beans.fav.djduoduo.v1`），无云端同步。
-- **未真机验证**：Windows 无 Xcode / iOS 设备，仅完成 CI 编译与 IPA 打包。
+- **未真机验证**：Windows 环境无 Xcode / iOS 设备，仅做静态校验与 CI 编译；实机问题请附运行日志。
