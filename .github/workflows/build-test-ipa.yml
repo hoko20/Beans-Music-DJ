@@ -54,22 +54,24 @@ jobs:
 
       - name: Package IPA
         run: |
+          VER=$(grep -oE 'MARKETING_VERSION: "[^"]+"' project.yml | head -1 | sed -E 's/.*"(.*)"/\1/')
+          echo "VERSION_LABEL=$VER" >> "$GITHUB_ENV"
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/Beans.app Payload/
-          ditto -c -k --sequesterRsrc --keepParent Payload Beans-2.0.0-test.ipa
+          ditto -c -k --sequesterRsrc --keepParent Payload "Beans-${VER}-test.ipa"
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Beans-2.0.0-test-ipa
-          path: Beans-2.0.0-test.ipa
+          name: Beans-${{ env.VERSION_LABEL }}-test-ipa
+          path: Beans-${{ env.VERSION_LABEL }}-test.ipa
 
       - name: Commit test IPA
         run: |
           mkdir -p ci-builds
-          cp Beans-2.0.0-test.ipa ci-builds/Beans-2.0.0-test.ipa
+          cp "Beans-${VERSION_LABEL}-test.ipa" "ci-builds/Beans-${VERSION_LABEL}-test.ipa"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f ci-builds/Beans-2.0.0-test.ipa
+          git add -f "ci-builds/Beans-${VERSION_LABEL}-test.ipa"
           git commit -m "ci: attach test ipa [skip ci]" || exit 0
           git push
