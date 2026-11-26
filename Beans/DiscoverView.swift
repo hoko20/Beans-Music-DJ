@@ -127,7 +127,16 @@ struct DiscoverView: View {
             .padding(.vertical, 8)
         }
         .scrollIndicators(.hidden)
-        .background(.ultraThinMaterial)
+        .background {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .ignoresSafeArea(edges: .top)
+                .overlay(alignment: .bottom) {
+                    Rectangle()
+                        .fill(Color.beansComment.opacity(0.10))
+                        .frame(height: 0.5)
+                }
+        }
     }
 
     // MARK: 内容
@@ -182,12 +191,21 @@ struct DiscoverView: View {
     }
 
     private func card(song: Song, index: Int) -> some View {
-        Button {
+        let isCurrent = player.currentSong?.identityKey == song.identityKey
+        return Button {
             BeansHaptics.tap()
             player.play(songs: songs, startAt: index)
         } label: {
             VStack(alignment: .leading, spacing: 7) {
                 SongCover(seed: song.coverSeed, size: coverSide, cornerRadius: 16)
+                    .overlay {
+                        if isCurrent {
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .strokeBorder(Color.beansAmber, lineWidth: 2)
+                        }
+                    }
+                    .shadow(color: isCurrent ? Color.beansAmber.opacity(0.45) : .clear,
+                            radius: isCurrent ? 12 : 0)
                     .overlay(alignment: .topLeading) {
                         if let tag = song.qualityTag {
                             Text(tag)
@@ -196,6 +214,15 @@ struct DiscoverView: View {
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 3)
                                 .background(Capsule().fill(.black.opacity(0.35)))
+                                .padding(8)
+                        }
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        if isCurrent {
+                            NowPlayingIndicator()
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 5)
+                                .background(Capsule().fill(.black.opacity(0.4)))
                                 .padding(8)
                         }
                     }
@@ -209,19 +236,31 @@ struct DiscoverView: View {
                             .padding(8)
                     }
                 Text(song.name)
-                    .font(BeansFont.appFont(13, .medium))
-                    .foregroundStyle(Color.beansLabel)
+                    .font(BeansFont.appFont(13, isCurrent ? .semibold : .medium))
+                    .foregroundStyle(isCurrent ? Color.beansAmber : Color.beansLabel)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                     .frame(height: 36, alignment: .top)
-                Text(song.artists.isEmpty ? "DJ多多" : song.artists)
-                    .font(BeansFont.appFont(11))
-                    .foregroundStyle(Color.beansComment)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    if isCurrent {
+                        Circle()
+                            .fill(Color.beansAmber)
+                            .frame(width: 4, height: 4)
+                        Text("播放中")
+                            .font(BeansFont.appFont(10, .semibold))
+                            .foregroundStyle(Color.beansAmber)
+                    } else {
+                        Text(song.artists.isEmpty ? "DJ多多" : song.artists)
+                            .font(BeansFont.appFont(11))
+                            .foregroundStyle(Color.beansComment)
+                    }
+                }
+                .lineLimit(1)
             }
         }
         .buttonStyle(GlassPressButtonStyle(scale: 0.97))
         .contextMenu { menu(for: song) }
+        .animation(.easeInOut(duration: 0.2), value: isCurrent)
     }
 
     @ViewBuilder

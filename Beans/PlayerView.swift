@@ -15,8 +15,18 @@ struct PlayerView: View {
     @State private var showSleep = false
     @State private var circularCover = UserDefaults.standard.bool(forKey: "beans.player.circularCover")
     @State private var dragOffset: CGFloat = 0
+    @State private var scrubPreview: Double?
 
     private var song: Song? { player.currentSong }
+
+    private var totalDuration: Double {
+        max(clock.duration, song?.duration ?? 0)
+    }
+
+    /// 下拉关闭进度 0…1
+    private var dismissProgress: CGFloat {
+        min(max(dragOffset / 380, 0), 1)
+    }
 
     private var coverSide: CGFloat {
         min(UIScreen.main.bounds.width - 76, 360)
@@ -25,6 +35,7 @@ struct PlayerView: View {
     var body: some View {
         ZStack {
             background
+                .opacity(1 - Double(dismissProgress))
             VStack(spacing: 0) {
                 topBar
                 Spacer(minLength: 8)
@@ -38,9 +49,11 @@ struct PlayerView: View {
             }
             .padding(.horizontal, 24)
             .padding(.bottom, 18)
+            .scaleEffect(1 - 0.03 * dismissProgress)
         }
         .offset(y: dragOffset)
         .gesture(dismissGesture)
+        .presentationBackground(.clear)
         .sheet(isPresented: $showQuality) {
             PlayerQualitySheet(song: song)
         }
@@ -53,6 +66,7 @@ struct PlayerView: View {
     private var background: some View {
         let colors = CoverArt.colors(seed: song?.coverSeed ?? 0, colorScheme: .dark)
         return ZStack {
+            Color.black
             LinearGradient(colors: [colors[0].opacity(0.55), Color.black, Color.black],
                            startPoint: .top, endPoint: .bottom)
             DJVisualView(accent: Color.beansAmber, secondary: colors[0],
@@ -175,20 +189,38 @@ struct PlayerView: View {
     // MARK: 进度
 
     private var seekSection: some View {
-        VStack(spacing: 4) {
-            SeekBar(progress: clock.progress,
-                    duration: max(clock.duration, song?.duration ?? 0)) { seconds in
-                player.seek(to: seconds)
+        VStack(spacing: 7) {
+            ZStack {
+                if let scrubPreview {
+                    Text(beansTimeString(scrubPreview))
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color.beansAmber))
+                        .transition(.opacity)
+                }
             }
+            .frame(height: 18)
+            .animation(.easeOut(duration: 0.12), value: scrubPreview != nil)
+
+            SeekBar(progress: clock.progress,
+                    duration: totalDuration,
+                    onScrub: { value in scrubPreview = value },
+                    onSeek: { seconds in
+                        player.seek(to: seconds)
+                        scrubPreview = nil
+                    })
             HStack {
-                Text(beansTimeString(clock.progress))
+                Text(beansTimeString(scrubPreview ?? clock.progress))
+                    .foregroundStyle(scrubPreview == nil ? .white.opacity(0.5) : Color.beansAmber)
                 Spacer()
-                Text(beansTimeString(max(clock.duration, song?.duration ?? 0)))
+                Text(beansTimeString(totalDuration))
+                    .foregroundStyle(.white.opacity(0.5))
             }
             .font(.system(size: 10, weight: .medium, design: .monospaced))
-            .foregroundStyle(.white.opacity(0.5))
         }
-        .padding(.top, 18)
+        .padding(.top, 24)
     }
 
     // MARK: 主控制
@@ -249,7 +281,7 @@ struct PlayerView: View {
             }
             .buttonStyle(.plain)
         }
-        .padding(.top, 22)
+        .padding(.top, 32)
     }
 
     // MARK: 次级控制
@@ -269,7 +301,7 @@ struct PlayerView: View {
                 if let song { DownloadStore.shared.download(song: song) }
             }
         }
-        .padding(.top, 18)
+        .padding(.top, 26)
     }
 
     private func secondaryButton(icon: String, title: String, action: @escaping () -> Void) -> some View {
@@ -331,6 +363,7 @@ struct PlayerView: View {
 struct SeekBar: View {
     let progress: Double
     let duration: Double
+    var onScrub: ((Double?) -> Void)? = nil
     let onSeek: (Double) -> Void
 
     @State private var dragProgress: Double?
@@ -351,25 +384,39 @@ struct SeekBar: View {
                                          startPoint: .leading, endPoint: .trailing))
                     .frame(width: max(geo.size.width * ratio, 4))
             }
-            .frame(height: 6)
-            .contentShape(Rectangle().inset(by: -14))
+            .frame(height: dragProgress == nil ? 6 : 8)
+            .animation(.easeOut(duration: 0.15), value: dragProgress == nil)
+            .overlay(alignment: .leading) {
+                Circle()
+                    .fill(.white)
+                    .frame(width: dragProgress == nil ? 11 : 15,
+                           height: dragProgress == nil ? 11 : 15)
+                    .shadow(color: .black.opacity(0.3), radius: 3, y: 1)
+                    .offset(x: max(0, geo.size.width * ratio - (dragProgress == nil ? 5.5 : 7.5)))
+                    .animation(.easeOut(duration: 0.15), value: dragProgress == nil)
+            }
+            .frame(maxHeight: .infinity, alignment: .center)
+            .contentShape(Rectangle().inset(by: -16))
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         guard duration > 0.01 else { return }
                         let x = min(max(value.location.x, 0), geo.size.width)
-                        dragProgress = duration * Double(x / geo.size.width)
+                        let target = duration * Double(x / geo.size.width)
+                        dragProgress = target
+                        onScrub?(target)
                     }
                     .onEnded { value in
                         guard duration > 0.01 else { return }
                         let x = min(max(value.location.x, 0), geo.size.width)
                         let target = duration * Double(x / geo.size.width)
                         dragProgress = nil
+                        onScrub?(nil)
                         onSeek(target)
                     }
             )
         }
-        .frame(height: 6)
+        .frame(height: 18)
     }
 }
 

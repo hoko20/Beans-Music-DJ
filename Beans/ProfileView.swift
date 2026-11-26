@@ -195,59 +195,100 @@ struct ProfileView: View {
     // MARK: 设置
 
     private var settingsCard: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("设置")
-                    .font(BeansFont.appFont(15, .bold))
-                    .foregroundStyle(Color.beansLabel)
-                Spacer()
+        VStack(spacing: 14) {
+            settingsGroup(title: "播放") {
+                qualityRow(icon: "waveform",
+                           tint: Color.beansAmber,
+                           title: "默认播放音质",
+                           value: player.playbackQuality.title,
+                           selection: player.playbackQuality) { quality in
+                    player.playbackQuality = quality
+                }
+                rowDivider
+                qualityRow(icon: "arrow.down.circle",
+                           tint: Color.beansSage,
+                           title: "下载音质",
+                           value: downloadQuality.title,
+                           selection: downloadQuality) { quality in
+                    downloadQualityRaw = quality.rawValue
+                }
             }
-            .padding(.bottom, 6)
 
-            qualityRow(title: "默认播放音质",
-                       value: player.playbackQuality.title,
-                       selection: player.playbackQuality) { quality in
-                player.playbackQuality = quality
-            }
-            rowDivider
-            qualityRow(title: "下载音质",
-                       value: downloadQuality.title,
-                       selection: downloadQuality) { quality in
-                downloadQualityRaw = quality.rawValue
-            }
-            rowDivider
-            Menu {
-                ForEach(BeansUIStyle.allCases, id: \.self) { style in
-                    Button(style.title) { theme.setUIStyle(style) }
-                }
-            } label: {
-                settingRow(title: "界面风格", value: theme.uiStyle.title)
-            }
-            rowDivider
-            Menu {
-                ForEach(BeansThemeMode.allCases) { mode in
-                    Button(mode.title) {
-                        themeModeRaw = mode.rawValue
+            settingsGroup(title: "外观") {
+                Menu {
+                    ForEach(BeansUIStyle.allCases, id: \.self) { style in
+                        Button {
+                            theme.setUIStyle(style)
+                        } label: {
+                            if style == theme.uiStyle {
+                                Label(style.title, systemImage: "checkmark")
+                            } else {
+                                Text(style.title)
+                            }
+                        }
                     }
+                } label: {
+                    settingRow(icon: "square.on.circle",
+                               tint: Color(red: 0.39, green: 0.71, blue: 0.96),
+                               title: "界面风格",
+                               value: theme.uiStyle.title)
                 }
-            } label: {
-                settingRow(title: "深浅模式", value: currentThemeMode.title)
+                rowDivider
+                Menu {
+                    ForEach(BeansThemeMode.allCases) { mode in
+                        Button {
+                            themeModeRaw = mode.rawValue
+                        } label: {
+                            if mode == currentThemeMode {
+                                Label(mode.title, systemImage: "checkmark")
+                            } else {
+                                Text(mode.title)
+                            }
+                        }
+                    }
+                } label: {
+                    settingRow(icon: "circle.lefthalf.filled",
+                               tint: Color(red: 0.55, green: 0.52, blue: 0.92),
+                               title: "深浅模式",
+                               value: currentThemeMode.title)
+                }
             }
-            rowDivider
-            settingRow(title: "版本", value: appVersion)
-            rowDivider
-            Button { showLogs = true } label: {
-                settingRow(title: "运行日志", value: "查看")
+
+            settingsGroup(title: "其他") {
+                Button { showChangelog = true } label: {
+                    settingRow(icon: "sparkles",
+                               tint: Color.beansAmber,
+                               title: "更新日志",
+                               value: "v\(appVersion)")
+                }
+                .buttonStyle(.plain)
+                rowDivider
+                Button { showLogs = true } label: {
+                    settingRow(icon: "doc.text",
+                               tint: Color.beansComment,
+                               title: "运行日志",
+                               value: "查看")
+                }
+                .buttonStyle(.plain)
+                rowDivider
+                Button { showDisclaimer = true } label: {
+                    settingRow(icon: "shield.lefthalf.filled",
+                               tint: Color.beansSage,
+                               title: "免责声明",
+                               value: "查看")
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
-            rowDivider
-            Button { showDisclaimer = true } label: {
-                settingRow(title: "免责声明", value: "查看")
+
+            HStack(spacing: 6) {
+                Image(systemName: "info.circle")
+                Text("Beans Music DJ \(appVersion)")
             }
-            .buttonStyle(.plain)
+            .font(BeansFont.appFont(11))
+            .foregroundStyle(Color.beansComment)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 2)
         }
-        .padding(16)
-        .background { BeansGlass(shape: RoundedRectangle(cornerRadius: 20, style: .continuous)) }
     }
 
     private var currentThemeMode: BeansThemeMode {
@@ -256,28 +297,57 @@ struct ProfileView: View {
 
     private var rowDivider: some View {
         Rectangle()
-            .fill(Color.beansComment.opacity(0.12))
+            .fill(Color.beansComment.opacity(0.10))
             .frame(height: 0.7)
+            .padding(.leading, 41)
     }
 
-    private func settingRow(title: String, value: String) -> some View {
-        HStack {
+    private func settingsGroup<Content: View>(title: String,
+                                              @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title)
+                .font(BeansFont.appFont(12, .semibold))
+                .foregroundStyle(Color.beansComment)
+                .padding(.leading, 8)
+            VStack(spacing: 0) { content() }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 4)
+                .background {
+                    BeansGlass(shape: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+        }
+    }
+
+    private func settingRow(icon: String, tint: Color, title: String, value: String,
+                            showsChevron: Bool = true) -> some View {
+        HStack(spacing: 11) {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(tint.opacity(0.16))
+                .frame(width: 30, height: 30)
+                .overlay {
+                    Image(systemName: icon)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(tint)
+                }
             Text(title)
                 .font(BeansFont.appFont(14))
                 .foregroundStyle(Color.beansLabel)
-            Spacer()
+            Spacer(minLength: 8)
             Text(value)
-                .font(BeansFont.appFont(13))
+                .font(BeansFont.appFont(12))
                 .foregroundStyle(Color.beansComment)
-            Image(systemName: "chevron.right")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(Color.beansComment.opacity(0.7))
+                .lineLimit(1)
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.beansComment.opacity(0.6))
+            }
         }
-        .padding(.vertical, 11)
+        .padding(.vertical, 9)
         .contentShape(Rectangle())
     }
 
-    private func qualityRow(title: String, value: String,
+    private func qualityRow(icon: String, tint: Color, title: String, value: String,
                             selection: DJddQuality,
                             onSelect: @escaping (DJddQuality) -> Void) -> some View {
         Menu {
@@ -294,7 +364,7 @@ struct ProfileView: View {
                 }
             }
         } label: {
-            settingRow(title: title, value: value)
+            settingRow(icon: icon, tint: tint, title: title, value: value)
         }
     }
 
