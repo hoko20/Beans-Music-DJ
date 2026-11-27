@@ -47,6 +47,7 @@ struct LogViewerSheet: View {
                         .padding(.vertical, 8)
                         if filtered.isEmpty {
                             EmptyStateView(icon: "doc.text", text: "暂无日志")
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else {
                             ScrollView {
                                 LazyVStack(spacing: 6) {
@@ -80,6 +81,8 @@ struct LogViewerSheet: View {
                         }
                     }
                 }
+                // 无日志时 VStack 会收缩并被 ZStack 居中，导致筛选栏跑到屏幕中间。
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
             .navigationTitle(importedText == nil ? "日志" : "导入的日志")
             .navigationBarTitleDisplayMode(.inline)

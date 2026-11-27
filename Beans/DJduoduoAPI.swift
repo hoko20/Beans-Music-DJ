@@ -210,8 +210,22 @@ final class DJduoduoAPI {
 
     private let formatLock = NSLock()
     private var formatCache: [Int: [DJddFormat]] = [:]
+    /// 分类列表变动极少，成功获取后缓存，避免每次下拉刷新都额外等一次网络。
+    private var cachedCategories: [DJddCategory]?
 
     private init() {}
+
+    private func storedCategories() -> [DJddCategory]? {
+        formatLock.lock()
+        defer { formatLock.unlock() }
+        return cachedCategories
+    }
+
+    private func storeCategories(_ cats: [DJddCategory]) {
+        formatLock.lock()
+        cachedCategories = cats
+        formatLock.unlock()
+    }
 
     // MARK: 通用请求
 
@@ -248,25 +262,38 @@ final class DJduoduoAPI {
         req.setValue("*/*", forHTTPHeaderField: "Accept")
         req.setValue("zh-Hans,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
 
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
-            throw DJddError.http(http.statusCode)
+        // 网络层抖动（超时 / 断连）自动重试一次；业务错误（HTTP / RetCode / JSON）不重试。
+        for attempt in 0..<2 {
+            do {
+                let (data, resp) = try await URLSession.shared.data(for: req)
+                if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
+                    throw DJddError.http(http.statusCode)
+                }
+                guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    throw DJddError.badJSON
+                }
+                if let ret = json["RetCode"] as? NSNumber,
+                   ret.intValue != 200 && ret.intValue != 0 {
+                    let msg = json["RetMsg"] as? String ?? ""
+                    throw NSError(domain: "DJduoduoAPI", code: ret.intValue,
+                                  userInfo: [NSLocalizedDescriptionKey: "RetCode=\(ret.intValue) \(msg)"])
+                }
+                return json
+            } catch let error as URLError {
+                if attempt == 0 {
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    continue
+                }
+                throw error
+            }
         }
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw DJddError.badJSON
-        }
-        if let ret = json["RetCode"] as? NSNumber,
-           ret.intValue != 200 && ret.intValue != 0 {
-            let msg = json["RetMsg"] as? String ?? ""
-            throw NSError(domain: "DJduoduoAPI", code: ret.intValue,
-                          userInfo: [NSLocalizedDescriptionKey: "RetCode=\(ret.intValue) \(msg)"])
-        }
-        return json
+        throw DJddError.badJSON
     }
 
     // MARK: 接口 1：分类
 
     func categories() async -> [DJddCategory] {
+        if let cached = storedCategories() { return cached }
         do {
             // ★ type="home" → 首页 15 分类；不带/type="ring" 只有彩铃 3 项
             let json = try await request("listtab", params: ["PageNo": 0, "type": "home"])
@@ -280,9 +307,11 @@ final class DJduoduoAPI {
                     act: d["Act"] as? String ?? "homechn"
                 )
             }
-            return cats.isEmpty ? DJddCategory.fallback : cats
+            guard !cats.isEmpty else { return storedCategories() ?? DJddCategory.fallback }
+            storeCategories(cats)
+            return cats
         } catch {
-            return DJddCategory.fallback
+            return storedCategories() ?? DJddCategory.fallback
         }
     }
 
