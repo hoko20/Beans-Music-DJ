@@ -111,6 +111,8 @@ struct LibraryView: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
+            // 整块卡片都可点击：否则命中区域只有左侧图标/文字，右侧空白点了没反应
+            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             .background { BeansGlass(shape: RoundedRectangle(cornerRadius: 18, style: .continuous)) }
         }
         .buttonStyle(GlassPressButtonStyle(scale: 0.98))

@@ -190,6 +190,8 @@ struct ProfileView: View {
         }
         .padding(13)
         .frame(maxWidth: .infinity, alignment: .leading)
+        // 整块卡片都可点击：否则命中区域只有左侧图标/文字，右侧空白点了没反应
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .background { BeansGlass(shape: RoundedRectangle(cornerRadius: 16, style: .continuous)) }
     }
 
@@ -549,6 +551,7 @@ struct EqualizerSettingsView: View {
 
 struct AppearanceSettingsView: View {
     @EnvironmentObject private var theme: ThemeStore
+    @EnvironmentObject private var player: PlayerManager
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("beans.themeMode") private var themeModeRaw = BeansThemeMode.system.rawValue
     @State private var pickedItem: PhotosPickerItem?
@@ -615,7 +618,8 @@ struct AppearanceSettingsView: View {
                     wallpaperCard
                 }
                 .padding(16)
-                .padding(.bottom, 24)
+                // 迷你播放条浮在内容之上，有歌时给底部留出与它等高的空间，壁纸卡片不会被挡住
+                .padding(.bottom, player.currentSong == nil ? 28 : 104)
             }
             .beansScrollIndicatorsHidden()
         }
