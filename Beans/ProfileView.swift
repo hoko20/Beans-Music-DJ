@@ -549,14 +549,22 @@ struct EqualizerSettingsView: View {
 
 struct AppearanceSettingsView: View {
     @EnvironmentObject private var theme: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     @AppStorage("beans.themeMode") private var themeModeRaw = BeansThemeMode.system.rawValue
     @State private var pickedItem: PhotosPickerItem?
+    @State private var isImporting = false
 
     private let columns = [GridItem(.adaptive(minimum: 92), spacing: 12)]
 
+    /// 当前外观下真正生效的壁纸（另一侧为空时会回退，这里读到的是回退后的路径）
+    private var currentWallpaperPath: String {
+        theme.backgroundImagePath(for: colorScheme)
+    }
+
     var body: some View {
         ZStack {
-            GlassBackdrop()
+            // 预览页恒定展示当前壁纸：即使关闭“同步到所有页面”，这里也要立刻看到效果
+            GlassBackdrop(homeMode: true)
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -604,39 +612,7 @@ struct AppearanceSettingsView: View {
                         }
                     }
 
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("壁纸")
-                            .font(BeansFont.appFont(14, .semibold))
-                            .foregroundStyle(Color.beansLabel)
-                        HStack(spacing: 10) {
-                            PhotosPicker(selection: $pickedItem, matching: .images) {
-                                Label("导入壁纸", systemImage: "photo")
-                                    .font(BeansFont.appFont(13, .semibold))
-                                    .foregroundStyle(Color.beansLabel)
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 10)
-                                    .background { BeansGlass(shape: Capsule()) }
-                            }
-                            Button {
-                                theme.clearBackgroundImage()
-                                ToastCenter.shared.show("已移除壁纸")
-                            } label: {
-                                Text("移除")
-                                    .font(BeansFont.appFont(13, .semibold))
-                                    .foregroundStyle(Color.beansComment)
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 10)
-                                    .background { BeansGlass(shape: Capsule()) }
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        Toggle("壁纸同步到所有页面", isOn: Binding(
-                            get: { theme.backgroundSyncAll },
-                            set: { theme.setBackgroundSyncAll($0) }
-                        ))
-                        .font(BeansFont.appFont(13))
-                        .tint(Color.beansAmber)
-                    }
+                    wallpaperCard
                 }
                 .padding(16)
                 .padding(.bottom, 24)
@@ -645,14 +621,191 @@ struct AppearanceSettingsView: View {
         }
         .navigationTitle("外观")
         .navigationBarTitleDisplayMode(.inline)
-        .onChange(of: pickedItem?.itemIdentifier) { _ in
-            guard let item = pickedItem else { return }
-            Task {
-                if let data = try? await item.loadTransferable(type: Data.self) {
-                    await MainActor.run {
-                        theme.addWallpaper(data)
-                        ToastCenter.shared.show("壁纸已更新")
+        .onChange(of: pickedItem) { _, item in
+            importWallpaper(from: item)
+        }
+    }
+
+    // MARK: 壁纸
+
+    private var wallpaperCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text("壁纸")
+                    .font(BeansFont.appFont(14, .semibold))
+                    .foregroundStyle(Color.beansLabel)
+                Spacer()
+                Text(colorScheme == .dark ? "深色模式" : "浅色模式")
+                    .font(BeansFont.appFont(10, .medium))
+                    .foregroundStyle(Color.beansComment)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background { BeansGlass(shape: Capsule()) }
+            }
+
+            wallpaperPreview
+
+            HStack(spacing: 10) {
+                PhotosPicker(selection: $pickedItem, matching: .images) {
+                    HStack(spacing: 6) {
+                        if isImporting {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .tint(Color.beansLabel)
+                        } else {
+                            Image(systemName: "photo")
+                        }
+                        Text(isImporting ? "导入中…" : "导入壁纸")
                     }
+                    .font(BeansFont.appFont(13, .semibold))
+                    .foregroundStyle(Color.beansLabel)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background { BeansGlass(shape: Capsule()) }
+                }
+                .disabled(isImporting)
+
+                Button {
+                    BeansHaptics.tap()
+                    theme.clearBackgroundImage(for: colorScheme)
+                    ToastCenter.shared.show("已移除壁纸")
+                } label: {
+                    Text("移除")
+                        .font(BeansFont.appFont(13, .semibold))
+                        .foregroundStyle(currentWallpaperPath.isEmpty ? Color.beansComment.opacity(0.45) : Color.beansComment)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background { BeansGlass(shape: Capsule()) }
+                }
+                .buttonStyle(.plain)
+                .disabled(currentWallpaperPath.isEmpty)
+                Spacer()
+            }
+
+            if theme.wallpaperPaths.isEmpty {
+                Text("导入后的壁纸会保存在这里，可随时切换")
+                    .font(BeansFont.appFont(11))
+                    .foregroundStyle(Color.beansComment)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(theme.wallpaperPaths, id: \.self) { path in
+                            Button {
+                                BeansHaptics.select()
+                                theme.applyWallpaper(at: path, for: colorScheme)
+                                ToastCenter.shared.show("已切换壁纸")
+                            } label: {
+                                wallpaperThumbnail(path)
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    theme.deleteWallpaper(at: path)
+                                    ToastCenter.shared.show("已删除壁纸")
+                                } label: {
+                                    Label("删除", systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 2)
+                }
+                .scrollClipDisabled()
+            }
+
+            Toggle("壁纸同步到所有页面", isOn: Binding(
+                get: { theme.backgroundSyncAll },
+                set: { theme.setBackgroundSyncAll($0) }
+            ))
+            .font(BeansFont.appFont(13))
+            .tint(Color.beansAmber)
+        }
+        .padding(14)
+        .background { BeansGlass(shape: RoundedRectangle(cornerRadius: 20, style: .continuous)) }
+    }
+
+    private var wallpaperPreview: some View {
+        ZStack {
+            LinearGradient.beansBackdrop
+            if let image = theme.customBackgroundImage(for: colorScheme) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(height: 168)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+            } else {
+                VStack(spacing: 6) {
+                    Image(systemName: "photo.badge.plus")
+                        .font(.system(size: 24, weight: .semibold))
+                    Text("还没有设置壁纸")
+                        .font(BeansFont.appFont(12, .semibold))
+                    Text("点“导入壁纸”从相册选一张照片")
+                        .font(BeansFont.appFont(10))
+                }
+                .foregroundStyle(Color.beansComment)
+            }
+        }
+        .frame(height: 168)
+        .frame(maxWidth: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.beansComment.opacity(0.16), lineWidth: 1)
+        }
+    }
+
+    private func wallpaperThumbnail(_ path: String) -> some View {
+        let selected = currentWallpaperPath == path
+        return ZStack {
+            Color.beansGlassFill
+            if let image = BeansImageFileCache.image(at: path) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "photo")
+                    .foregroundStyle(Color.beansComment)
+            }
+        }
+        .frame(width: 62, height: 62)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(selected ? Color.beansAmber : Color.beansComment.opacity(0.16),
+                              lineWidth: selected ? 2 : 1)
+        }
+        .overlay(alignment: .topTrailing) {
+            if selected {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.beansAmber)
+                    .background(Circle().fill(Color.black.opacity(0.28)))
+                    .offset(x: 3, y: -3)
+            }
+        }
+    }
+
+    /// 相册选择回调：先取数据再落盘，失败给出明确提示，不再出现“看起来导入成功但没反应”。
+    private func importWallpaper(from item: PhotosPickerItem?) {
+        guard let item, !isImporting else { return }
+        isImporting = true
+        Task {
+            let data = try? await item.loadTransferable(type: Data.self)
+            await MainActor.run {
+                isImporting = false
+                // 复位选择：同一张照片再次选择时也要能重新触发
+                pickedItem = nil
+                guard let data, !data.isEmpty else {
+                    ToastCenter.shared.show("无法读取这张图片，请换一张重试")
+                    return
+                }
+                if theme.addWallpaper(data, for: colorScheme) {
+                    BeansHaptics.success()
+                    ToastCenter.shared.show("壁纸已应用")
+                } else {
+                    ToastCenter.shared.show("壁纸保存失败，请重试")
                 }
             }
         }

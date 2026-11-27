@@ -573,35 +573,40 @@ final class ThemeStore: ObservableObject {
     }
 
     /// 上传新壁纸：归一化后保存到壁纸库，并直接设为当前背景（覆盖保存当前壁纸）
-    func addWallpaper(_ data: Data) {
+    /// - Returns: 是否成功写入并应用；失败时调用方应给出可见提示，避免“看起来导入成功但没反应”。
+    @discardableResult
+    func addWallpaper(_ data: Data) -> Bool {
         addWallpaper(data, for: Self.currentColorScheme)
     }
 
     /// 上传新壁纸并应用到指定外观。
-    func addWallpaper(_ data: Data, for colorScheme: ColorScheme) {
-        let normalized = Self.normalizedWallpaperJPEG(from: data)
-        let imageData: Data
-        if let normalized, !normalized.isEmpty {
-            imageData = normalized
-        } else if !data.isEmpty {
-            // 归一化失败（如超内存的极端大图）：兜底保存原图，保证上传必生效
-            imageData = data
-        } else {
-            return
-        }
+    @discardableResult
+    func addWallpaper(_ data: Data, for colorScheme: ColorScheme) -> Bool {
+        guard !data.isEmpty, let decoded = UIImage(data: data) else { return false }
+        let normalized = Self.normalizedWallpaperJPEG(from: decoded)
+        // 归一化失败时退回原图，保证上传必生效（例如极端大图 / 非 JPEG 源）
+        let imageData = normalized ?? data
         let url = Self.wallpaperDirectory()
             .appendingPathComponent("wallpaper-\(Int(Date().timeIntervalSince1970))-\(Int.random(in: 100...999)).jpg")
         do {
             try imageData.write(to: url, options: .atomic)
-            wallpaperPaths.append(url.path)
-            saveWallpaperList()
-            setBackgroundImagePath(url.path, for: colorScheme)
-            saveWallpaperBackup(url.path, data: imageData)
-            invalidateBackgroundCache()
-            BeansImageFileCache.remove(url.path)
         } catch {
-            // 保存失败：静默保留当前壁纸
+            BeansLogger.shared.log("壁纸写入失败：\(error.localizedDescription)", level: .warn)
+            return false
         }
+        guard FileManager.default.fileExists(atPath: url.path),
+              BeansImageFileCache.image(at: url.path) != nil else {
+            BeansLogger.shared.log("壁纸写入后无法解码：\(url.lastPathComponent)", level: .warn)
+            return false
+        }
+        if !wallpaperPaths.contains(url.path) {
+            wallpaperPaths.append(url.path)
+        }
+        saveWallpaperList()
+        setBackgroundImagePath(url.path, for: colorScheme)
+        saveWallpaperBackup(url.path, data: imageData)
+        invalidateBackgroundCache()
+        return true
     }
 
     /// 从壁纸库选择壁纸应用为当前背景（无需再去相册）
@@ -689,6 +694,10 @@ final class ThemeStore: ObservableObject {
             UserDefaults.standard.set(path, forKey: backgroundImageLightKey)
         }
         UserDefaults.standard.set(path, forKey: backgroundImageKey)
+        // 路径一变就丢弃旧解码缓存，避免换了壁纸仍显示上一张
+        if cachedBackgroundImagePath != path {
+            invalidateBackgroundCache()
+        }
     }
 
     private func persistSplitBackgroundImages() {
@@ -769,8 +778,7 @@ final class ThemeStore: ObservableObject {
     }
     /// 归一化背景图：长边统一到 1600px；原图过小时放大到该尺寸并轻度高斯模糊柔化，
     /// 铺满屏幕时既不会像素化，也不会因小图拉伸引发布局/视觉问题
-    private static func normalizedWallpaperJPEG(from data: Data) -> Data? {
-        guard let image = UIImage(data: data) else { return nil }
+    private static func normalizedWallpaperJPEG(from image: UIImage) -> Data? {
         let w = image.size.width
         let h = image.size.height
         guard w > 0, h > 0 else { return nil }
