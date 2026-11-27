@@ -14,6 +14,9 @@ struct DiscoverView: View {
     @State private var page = 0
     @State private var hasMore = true
     @State private var isLoading = false
+    @State private var isRefreshing = false
+    /// 每次刷新 / 切换分类递增，用于丢弃过期的异步结果，避免旧请求覆盖新数据。
+    @State private var loadToken = 0
     @State private var errorMessage: String?
     @State private var showSearch = false
 
@@ -127,15 +130,6 @@ struct DiscoverView: View {
             .padding(.vertical, 8)
         }
         .scrollIndicators(.hidden)
-        .background {
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .overlay(alignment: .bottom) {
-                    Rectangle()
-                        .fill(Color.beansComment.opacity(0.10))
-                        .frame(height: 0.5)
-                }
-        }
     }
 
     // MARK: 内容
@@ -184,7 +178,7 @@ struct DiscoverView: View {
         }
         .padding(.vertical, 16)
         .onAppear {
-            guard hasMore, !isLoading else { return }
+            guard hasMore, !isLoading, !isRefreshing else { return }
             Task { await loadMore() }
         }
     }
@@ -286,23 +280,48 @@ struct DiscoverView: View {
     // MARK: 数据
 
     private func reload() async {
-        categories = await DJduoduoAPI.shared.categories()
-        if !categories.contains(selected), let first = categories.first {
+        // 新一次刷新会让旧请求的 token 失效；旧请求返回时会自行丢弃结果。
+        let token = loadToken + 1
+        loadToken = token
+        isRefreshing = true
+        defer { if token == loadToken { isRefreshing = false } }
+
+        let target = selected
+        let cats = await DJduoduoAPI.shared.categories()
+        guard token == loadToken else { return }
+        if !cats.isEmpty { categories = cats }
+        if !categories.contains(target), let first = categories.first {
             selected = first
         }
-        songs = []
-        page = 0
-        hasMore = true
-        errorMessage = nil
-        await loadMore()
+        let effective = selected
+
+        do {
+            let result = try await DJduoduoAPI.shared.songs(category: effective, page: 0)
+            guard token == loadToken else { return }
+            // 成功后才替换列表：刷新期间保留旧数据，避免列表收缩触发分页 onAppear 的竞态。
+            songs = result.songs
+            page = 1
+            hasMore = result.hasMore
+            errorMessage = nil
+        } catch {
+            guard token == loadToken else { return }
+            if songs.isEmpty {
+                errorMessage = "加载失败：\(error.localizedDescription)"
+            } else {
+                ToastCenter.shared.show("刷新失败，已保留当前列表")
+            }
+        }
     }
 
     private func loadMore() async {
-        guard !isLoading, hasMore else { return }
+        guard !isLoading, !isRefreshing, hasMore else { return }
+        let token = loadToken
+        let target = selected
         isLoading = true
         defer { isLoading = false }
         do {
-            let result = try await DJduoduoAPI.shared.songs(category: selected, page: page)
+            let result = try await DJduoduoAPI.shared.songs(category: target, page: page)
+            guard token == loadToken, target == selected else { return }
             if page == 0 {
                 songs = result.songs
             } else {
@@ -313,6 +332,7 @@ struct DiscoverView: View {
             page += 1
             errorMessage = nil
         } catch {
+            guard token == loadToken else { return }
             if page == 0 {
                 errorMessage = "加载失败：\(error.localizedDescription)"
             }

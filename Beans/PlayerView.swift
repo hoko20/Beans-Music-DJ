@@ -8,6 +8,7 @@ struct PlayerView: View {
     @EnvironmentObject private var player: PlayerManager
     @EnvironmentObject private var clock: PlaybackClock
     @ObservedObject private var favorites = FavoritesStore.shared
+    @ObservedObject private var downloads = DownloadStore.shared
     @Binding var isPresented: Bool
 
     @State private var showQuality = false
@@ -286,9 +287,10 @@ struct PlayerView: View {
 
     // MARK: 次级控制
 
+    /// 音质切换与下载共用同一个面板：入口只保留一个，避免两处逻辑各自为政。
     private var secondaryControls: some View {
         HStack(spacing: 0) {
-            secondaryButton(icon: "waveform", title: player.playbackQuality.title) {
+            secondaryButton(icon: "waveform.circle", title: qualityDownloadTitle) {
                 showQuality = true
             }
             secondaryButton(icon: "speedometer", title: rateText) {
@@ -297,11 +299,14 @@ struct PlayerView: View {
             secondaryButton(icon: "moon.zzz", title: player.sleepTimerFormatted ?? "定时") {
                 showSleep = true
             }
-            secondaryButton(icon: "arrow.down.circle", title: "下载") {
-                if let song { DownloadStore.shared.download(song: song) }
-            }
         }
         .padding(.top, 26)
+    }
+
+    private var qualityDownloadTitle: String {
+        guard let song else { return "音质 · 下载" }
+        if downloads.progress(for: song) != nil { return "下载中…" }
+        return downloads.isDownloaded(song) ? "音质 · 已下载" : "音质 · 下载"
     }
 
     private func secondaryButton(icon: String, title: String, action: @escaping () -> Void) -> some View {
@@ -422,6 +427,7 @@ struct SeekBar: View {
 
 // MARK: - 音质与下载面板
 
+/// 音质切换与下载合并为一个面板：一行一个档位，左侧选播放、右侧下载。
 struct PlayerQualitySheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var player: PlayerManager
@@ -430,15 +436,17 @@ struct PlayerQualitySheet: View {
 
     @State private var formats: [DJddFormat] = []
     @State private var loading = true
+    @State private var loadFailed = false
+    @State private var loadToken = 0
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("音质与下载")
                         .font(BeansFont.appFont(19, .bold))
                         .foregroundStyle(Color.beansLabel)
-                    Text("游客态 · 四档可用")
+                    Text("选择播放档位，或直接下载到本机 · 游客态四档可用")
                         .font(BeansFont.appFont(11))
                         .foregroundStyle(Color.beansComment)
                 }
@@ -449,31 +457,67 @@ struct PlayerQualitySheet: View {
             }
 
             if let song {
-                Text(song.name)
-                    .font(BeansFont.appFont(13, .medium))
-                    .foregroundStyle(Color.beansComment)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Image(systemName: "music.note")
+                        .font(.system(size: 11))
+                    Text(song.name)
+                        .lineLimit(1)
+                }
+                .font(BeansFont.appFont(12, .medium))
+                .foregroundStyle(Color.beansComment)
             }
 
             if loading {
                 LoadingStateView()
-            } else {
-                ForEach(DJddQuality.allCases) { quality in
-                    row(quality)
+                Spacer(minLength: 0)
+            } else if loadFailed {
+                VStack(spacing: 12) {
+                    Text("音质信息加载失败")
+                        .font(BeansFont.appFont(14, .semibold))
+                        .foregroundStyle(Color.beansLabel)
+                    Button {
+                        Task { await loadFormats() }
+                    } label: {
+                        Label("重试", systemImage: "arrow.clockwise")
+                            .font(BeansFont.appFont(12, .semibold))
+                            .foregroundStyle(Color.beansAmber)
+                    }
+                    .buttonStyle(.plain)
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 40)
+                Spacer(minLength: 0)
+            } else {
+                VStack(spacing: 2) {
+                    ForEach(DJddQuality.allCases) { row($0) }
+                }
+                Spacer(minLength: 0)
             }
 
-            Text("无损体积较大，建议在 Wi-Fi 下载。下载后可在「音乐库 → 已下载」找到。")
+            Text("下载后可在「音乐库 → 已下载」找到。切换播放档位会从当前进度重新加载。")
                 .font(BeansFont.appFont(10))
                 .foregroundStyle(Color.beansComment)
-            Spacer(minLength: 0)
         }
         .padding(20)
-        .presentationDetents([.height(430)])
+        .presentationDetents([.height(470), .large])
         .presentationDragIndicator(.visible)
-        .task {
-            guard let song else { loading = false; return }
-            formats = (try? await DJduoduoAPI.shared.formats(song: song)) ?? []
+        .task { await loadFormats() }
+    }
+
+    private func loadFormats() async {
+        guard let song else { loading = false; return }
+        let token = loadToken + 1
+        loadToken = token
+        loading = true
+        loadFailed = false
+        do {
+            let result = try await DJduoduoAPI.shared.formats(song: song)
+            guard token == loadToken else { return }
+            formats = result
+            loading = false
+        } catch {
+            guard token == loadToken else { return }
+            loadFailed = true
             loading = false
         }
     }
@@ -481,48 +525,78 @@ struct PlayerQualitySheet: View {
     private func row(_ quality: DJddQuality) -> some View {
         let format = formats.first { $0.quality == quality.rawValue }
         let isCurrent = player.playbackQuality == quality
-        return HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
+        let progress = song.flatMap { downloads.progress(for: $0) }
+        let isDownloading = progress?.quality == quality
+        let isDownloaded = song.map {
+            downloads.isDownloaded($0) && downloads.track(for: $0)?.qualityRaw == quality.rawValue
+        } ?? false
+        let available = format != nil
+
+        return HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(quality.title)
-                        .font(BeansFont.appFont(15, .semibold))
-                        .foregroundStyle(Color.beansLabel)
+                        .font(BeansFont.appFont(14, .semibold))
+                        .foregroundStyle(available ? Color.beansLabel : Color.beansComment)
                     if isCurrent {
                         Text("播放中")
                             .font(BeansFont.appFont(9, .bold))
                             .foregroundStyle(Color.beansAmber)
                     }
+                    if isDownloaded {
+                        Text("已下载")
+                            .font(BeansFont.appFont(9, .bold))
+                            .foregroundStyle(Color.beansSage)
+                    }
                 }
-                Text("\(format?.bitrateText ?? quality.bitrateText) · \(quality.container) · \(format?.sizeText ?? "体积未知")")
-                    .font(BeansFont.appFont(11))
+                Text("\(format?.bitrateText ?? quality.bitrateText) · \(quality.container) · \(format?.sizeText ?? "不可用")")
+                    .font(BeansFont.appFont(10))
                     .foregroundStyle(Color.beansComment)
+                if isDownloading {
+                    ProgressView(value: progress?.fraction ?? 0)
+                        .tint(Color.beansAmber)
+                        .frame(height: 3)
+                }
             }
-            Spacer()
+            Spacer(minLength: 4)
+
             Button {
+                guard available else { return }
                 player.setPlaybackQuality(quality)
                 ToastCenter.shared.show("已切换到 \(quality.title)")
             } label: {
-                Text("播放")
-                    .font(BeansFont.appFont(12, .semibold))
+                Text(isCurrent ? "播放中" : "播放")
+                    .font(BeansFont.appFont(11, .semibold))
                     .foregroundStyle(isCurrent ? Color.beansComment : Color.beansLabel)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 6)
                     .background { BeansGlass(shape: Capsule()) }
             }
             .buttonStyle(.plain)
-            .disabled(isCurrent)
+            .disabled(isCurrent || !available)
 
             Button {
-                if let song { DownloadStore.shared.download(song: song, quality: quality) }
+                guard let song, available else { return }
+                downloads.download(song: song, quality: quality)
             } label: {
-                let downloaded = song.map { downloads.track(for: $0)?.qualityRaw == quality.rawValue } ?? false
-                Image(systemName: downloaded ? "checkmark.circle.fill" : "arrow.down.circle")
-                    .font(.system(size: 18))
-                    .foregroundStyle(Color.beansAmber)
+                Group {
+                    if isDownloading {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .tint(Color.beansAmber)
+                            .frame(width: 18, height: 18)
+                    } else {
+                        Image(systemName: isDownloaded ? "checkmark.circle.fill" : "arrow.down.circle")
+                            .font(.system(size: 18))
+                            .foregroundStyle(isDownloaded ? Color.beansSage : Color.beansAmber)
+                    }
+                }
+                .frame(width: 24)
             }
             .buttonStyle(.plain)
+            .disabled(!available || isDownloaded || progress != nil)
         }
-        .padding(.vertical, 8)
-        .opacity(format == nil && !loading ? 0.45 : 1)
+        .padding(.vertical, 7)
+        .opacity(available ? 1 : 0.5)
     }
 }
