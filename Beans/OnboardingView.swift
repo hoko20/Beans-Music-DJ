@@ -31,7 +31,7 @@ struct OnboardingView: View {
                         .padding(.top, 48)
 
                     VStack(spacing: 6) {
-                        Text("欢迎使用 DJ多多版")
+                        Text("欢迎使用 豆豆音乐")
                             .font(BeansFont.appFont(26, .bold))
                             .foregroundStyle(Color.beansLabel)
                         Text("歌曲、分类、音质来自 DJ多多公开接口")

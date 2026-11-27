@@ -134,7 +134,7 @@ private enum BeansLogLocalizer {
     }
 
     private static let replacements: [(String, String)] = [
-        ("Beans Music 启动", "Beans Music started"),
+        ("豆豆音乐 启动", "DouDou Music started"),
         ("版本", "version"),
         ("搜索完成", "Search completed"),
         ("搜索失败", "Search failed"),

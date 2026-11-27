@@ -37,7 +37,7 @@ struct LibraryView: View {
                         }
                     }
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 32)
+                    .padding(.bottom, 92)
                 }
                 .beansScrollIndicatorsHidden()
             }

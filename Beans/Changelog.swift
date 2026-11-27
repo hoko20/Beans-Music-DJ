@@ -12,7 +12,7 @@ struct VersionLog: Identifiable {
     let imageURL: URL?
     let textColorHex: String?
 
-    init(id: String, version: String, title: String, notices: [String] = [], features: [String], fixes: [String], imageURL: URL? = nil, textColorHex: String? = nil) {
+    init(id: String, version: String, title: String, notices: [String] = [], features: [String], fixes: [String] = [], imageURL: URL? = nil, textColorHex: String? = nil) {
         self.id = id
         self.version = version
         self.title = title
@@ -50,24 +50,13 @@ enum ChangelogStore {
         VersionLog(
             id: "2.0.1",
             version: "2.0.1",
-            title: "界面细节优化",
-            notices: [
-                "2.0 系列为 DJ多多单平台版本：移除网易云 / QQ / 酷狗与账号、云端歌单同步，仅保留 DJ多多。",
-                "最低系统版本 iOS 26.0，仅支持 iPhone，仅中文。"
-            ],
+            title: "为每一次聆听，做一点更好的改变",
             features: [
-                "设置页重新分组：播放 / 外观 / 其他，三张卡片 + 彩色图标，界面风格与深浅模式菜单选中项显示勾选",
-                "主页当前播放歌曲高亮：琥珀描边 + 光晕 + 播放中标识",
-                "分类栏背景延伸覆盖状态栏，滚动时顶部不再割裂",
-                "播放页拖动进度条实时显示目标时间（浮动胶囊 + 左侧时间高亮），滑块加大",
-                "播放页下拉关闭时背景随手势淡出，直接露出主界面，不再闪空白",
-                "播放页控件与进度时间增加间距，底部控件不再拥挤",
-                "更新日志只显示当前版本说明"
-            ],
-            fixes: [
-                "15 分类胶囊 + 双列卡片 + 上拉分页",
-                "四档音质播放与下载、下载中心（进度 / 体积 / 导出 / 离线播放）",
-                "搜索跨 6 分类聚合 + 本地过滤；音乐库四入口；本机数据与备份恢复"
+                "迷你播放条更高更清晰，信息与控制分区呈现，点击不再误触歌曲",
+                "顶部状态栏与分类栏背景融为一体，滑动时不再有割裂感",
+                "我的页面底部信息完整可见，不再被播放条挡住",
+                "更新说明只展示当前版本的亮点，清爽一目了然",
+                "换上全新应用图标与名称，风格更统一"
             ]
         ),
     ]
@@ -118,16 +107,14 @@ struct ChangelogListView: View {
             ZStack {
                 GlassBackdrop(customColor: ThemeStore.shared.backgroundSyncAll ? ThemeStore.shared.customBackground : nil)
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        ForEach(ChangelogStore.logs) { log in
-                            VersionLogCard(log: log)
-                        }
+                    if let log = ChangelogStore.latest {
+                        VersionLogCard(log: log)
+                            .padding(16)
                     }
-                    .padding(16)
                 }
                 .beansScrollIndicatorsHidden()
             }
-            .navigationTitle("更新日志")
+            .navigationTitle("更新说明")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -193,10 +180,6 @@ private struct VersionLogCard: View {
             }
             if !log.features.isEmpty {
                 logSection(title: "新增功能", icon: "plus.circle.fill", items: log.features)
-            }
-            if !log.fixes.isEmpty {
-                Divider().overlay(Color.beansComment.opacity(0.15))
-                logSection(title: "问题修复", icon: "checkmark.circle.fill", items: log.fixes)
             }
         }
         .padding(16)

@@ -52,7 +52,8 @@ struct ProfileView: View {
                             .frame(maxWidth: .infinity, alignment: .center)
                     }
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 32)
+                    // 为常驻迷你播放条留出充足空间，底部信息不再被遮挡
+                    .padding(.bottom, 92)
                 }
                 .beansScrollIndicatorsHidden()
             }
@@ -282,7 +283,7 @@ struct ProfileView: View {
 
             HStack(spacing: 6) {
                 Image(systemName: "info.circle")
-                Text("Beans Music DJ \(appVersion)")
+                Text("豆豆音乐 \(appVersion)")
             }
             .font(BeansFont.appFont(11))
             .foregroundStyle(Color.beansComment)

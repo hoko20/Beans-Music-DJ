@@ -70,6 +70,11 @@ struct RootView: View {
                 .environmentObject(theme)
                 .environmentObject(favorites)
         }
+        .overlay(alignment: .top) {
+            // 状态栏统一背景：与分类栏同一材质，避免只显示 tab 栏一层造成割裂
+            StatusBarBackdrop()
+                .allowsHitTesting(false)
+        }
         .overlay(alignment: .bottom) {
             ToastView(center: ToastCenter.shared)
         }
@@ -81,20 +86,48 @@ struct RootView: View {
             HighRefreshKeeper.shared.configure(enabled: true)
         }
         .sheet(isPresented: $showWhatsNew) {
-            ChangelogListView()
+            WhatsNewSheet()
         }
     }
 
     /// 每个 Tab 内容都留出迷你播放器的安全区，保证它浮在系统底栏之上。
+    /// 容器背景吸收所有点击，避免点到播放条时穿透到底层歌曲卡片。
     private func tabContent<Content: View>(_ content: Content) -> some View {
         content.safeAreaInset(edge: .bottom, spacing: 0) {
             if player.currentSong != nil {
-                MiniPlayerView(showPlayer: $showPlayer)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 6)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                ZStack {
+                    // 不透明拦截层：填补播放条两侧与间隙，吞掉原本会落到列表上的点击
+                    Rectangle()
+                        .fill(Color.beansGlassFill.opacity(0.001))
+                        .contentShape(Rectangle())
+                        .onTapGesture { BeansHaptics.tap() }
+                    MiniPlayerView(showPlayer: $showPlayer)
+                        .padding(.horizontal, 10)
+                        .padding(.bottom, 6)
+                }
+                .frame(height: 76)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
+    }
+}
+
+// MARK: - 状态栏统一背景
+// 覆盖状态栏区域，材质与分类栏保持一致，滚动时顶部不再出现只有 tab 栏一层的割裂感。
+
+private struct StatusBarBackdrop: View {
+    var body: some View {
+        GeometryReader { geo in
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .frame(width: geo.size.width, height: geo.safeAreaInsets.top)
+                .overlay(alignment: .bottom) {
+                    Rectangle()
+                        .fill(Color.beansComment.opacity(0.10))
+                        .frame(height: 0.5)
+                }
+        }
+        .ignoresSafeArea(edges: .top)
     }
 }
 

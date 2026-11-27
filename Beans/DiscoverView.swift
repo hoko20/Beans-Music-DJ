@@ -34,7 +34,7 @@ struct DiscoverView: View {
                         categoryBar
                     }
                 }
-                .padding(.bottom, 32)
+                .padding(.bottom, 92)
             }
             .beansScrollIndicatorsHidden()
             .refreshable { await reload() }
@@ -130,7 +130,6 @@ struct DiscoverView: View {
         .background {
             Rectangle()
                 .fill(.ultraThinMaterial)
-                .ignoresSafeArea(edges: .top)
                 .overlay(alignment: .bottom) {
                     Rectangle()
                         .fill(Color.beansComment.opacity(0.10))
