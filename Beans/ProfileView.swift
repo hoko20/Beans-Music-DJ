@@ -19,6 +19,8 @@ struct ProfileView: View {
     @State private var showLogs = false
     @State private var showDisclaimer = false
     @State private var cacheText = "计算中…"
+    /// 当前打开的设置选项弹层（替代 Menu，避免收起时残留长方形高亮）
+    @State private var pickerKind: SettingsPickerKind?
     @AppStorage(DJddQuality.downloadKey) private var downloadQualityRaw = DJddQuality.high.rawValue
     @AppStorage("beans.themeMode") private var themeModeRaw = BeansThemeMode.system.rawValue
 
@@ -63,6 +65,7 @@ struct ProfileView: View {
         .sheet(isPresented: $showChangelog) { ChangelogListView() }
         .sheet(isPresented: $showLogs) { LogViewerSheet(importedText: nil) }
         .sheet(isPresented: $showDisclaimer) { DisclaimerSheet() }
+        .sheet(item: $pickerKind) { kind in pickerSheet(kind) }
         .task { cacheText = Self.cacheDescription() }
     }
 
@@ -200,65 +203,31 @@ struct ProfileView: View {
     private var settingsCard: some View {
         VStack(spacing: 14) {
             settingsGroup(title: "播放") {
-                qualityRow(icon: "waveform",
-                           tint: Color.beansAmber,
-                           title: "默认播放音质",
-                           value: player.playbackQuality.title,
-                           selection: player.playbackQuality) { quality in
-                    player.playbackQuality = quality
-                }
+                pickerRow(icon: "waveform",
+                          tint: Color.beansAmber,
+                          title: "默认播放音质",
+                          value: player.playbackQuality.title,
+                          kind: .playbackQuality)
                 rowDivider
-                qualityRow(icon: "arrow.down.circle",
-                           tint: Color.beansSage,
-                           title: "下载音质",
-                           value: downloadQuality.title,
-                           selection: downloadQuality) { quality in
-                    downloadQualityRaw = quality.rawValue
-                }
+                pickerRow(icon: "arrow.down.circle",
+                          tint: Color.beansSage,
+                          title: "下载音质",
+                          value: downloadQuality.title,
+                          kind: .downloadQuality)
             }
 
             settingsGroup(title: "外观") {
-                Menu {
-                    ForEach(BeansUIStyle.allCases, id: \.self) { style in
-                        Button {
-                            theme.setUIStyle(style)
-                        } label: {
-                            if style == theme.uiStyle {
-                                Label(style.title, systemImage: "checkmark")
-                            } else {
-                                Text(style.title)
-                            }
-                        }
-                    }
-                } label: {
-                    settingRow(icon: "square.on.circle",
-                               tint: Color(red: 0.39, green: 0.71, blue: 0.96),
-                               title: "界面风格",
-                               value: theme.uiStyle.title)
-                }
-                .menuStyle(.button)
-                .buttonStyle(.plain)
+                pickerRow(icon: "square.on.circle",
+                          tint: Color(red: 0.39, green: 0.71, blue: 0.96),
+                          title: "界面风格",
+                          value: theme.uiStyle.title,
+                          kind: .uiStyle)
                 rowDivider
-                Menu {
-                    ForEach(BeansThemeMode.allCases) { mode in
-                        Button {
-                            themeModeRaw = mode.rawValue
-                        } label: {
-                            if mode == currentThemeMode {
-                                Label(mode.title, systemImage: "checkmark")
-                            } else {
-                                Text(mode.title)
-                            }
-                        }
-                    }
-                } label: {
-                    settingRow(icon: "circle.lefthalf.filled",
-                               tint: Color(red: 0.55, green: 0.52, blue: 0.92),
-                               title: "深浅模式",
-                               value: currentThemeMode.title)
-                }
-                .menuStyle(.button)
-                .buttonStyle(.plain)
+                pickerRow(icon: "circle.lefthalf.filled",
+                          tint: Color(red: 0.55, green: 0.52, blue: 0.92),
+                          title: "深浅模式",
+                          value: currentThemeMode.title,
+                          kind: .themeMode)
             }
 
             settingsGroup(title: "其他") {
@@ -354,28 +323,63 @@ struct ProfileView: View {
         .contentShape(Rectangle())
     }
 
-    private func qualityRow(icon: String, tint: Color, title: String, value: String,
-                            selection: DJddQuality,
-                            onSelect: @escaping (DJddQuality) -> Void) -> some View {
-        Menu {
-            ForEach(DJddQuality.allCases) { quality in
-                Button {
-                    onSelect(quality)
-                    ToastCenter.shared.show("\(title)：\(quality.title)")
-                } label: {
-                    if quality == selection {
-                        Label("\(quality.title) · \(quality.summary)", systemImage: "checkmark")
-                    } else {
-                        Text("\(quality.title) · \(quality.summary)")
-                    }
-                }
-            }
+    /// 设置行：普通 Button + 自定义底部选项弹层。
+    /// 不用 Menu 是因为菜单收起时系统会在 label 上残留一块长方形高亮，和玻璃卡片不搭。
+    private func pickerRow(icon: String, tint: Color, title: String, value: String,
+                           kind: SettingsPickerKind) -> some View {
+        Button {
+            BeansHaptics.tap()
+            pickerKind = kind
         } label: {
             settingRow(icon: icon, tint: tint, title: title, value: value)
         }
-        // Menu 默认会给 label 套一层系统按钮外观，点击时出现长方形高亮，这里关掉
-        .menuStyle(.button)
         .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func pickerSheet(_ kind: SettingsPickerKind) -> some View {
+        switch kind {
+        case .playbackQuality:
+            SettingsOptionSheet(title: "默认播放音质",
+                                options: DJddQuality.allCases,
+                                selection: Binding(
+                                    get: { player.playbackQuality },
+                                    set: { quality in
+                                        player.playbackQuality = quality
+                                        ToastCenter.shared.show("默认播放音质：\(quality.title)")
+                                    }
+                                ),
+                                label: { $0.title },
+                                detail: { $0.summary })
+        case .downloadQuality:
+            SettingsOptionSheet(title: "下载音质",
+                                options: DJddQuality.allCases,
+                                selection: Binding(
+                                    get: { downloadQuality },
+                                    set: { quality in
+                                        downloadQualityRaw = quality.rawValue
+                                        ToastCenter.shared.show("下载音质：\(quality.title)")
+                                    }
+                                ),
+                                label: { $0.title },
+                                detail: { $0.summary })
+        case .uiStyle:
+            SettingsOptionSheet(title: "界面风格",
+                                options: BeansUIStyle.allCases,
+                                selection: Binding(
+                                    get: { theme.uiStyle },
+                                    set: { theme.setUIStyle($0) }
+                                ),
+                                label: { $0.title })
+        case .themeMode:
+            SettingsOptionSheet(title: "深浅模式",
+                                options: BeansThemeMode.allCases,
+                                selection: Binding(
+                                    get: { currentThemeMode },
+                                    set: { themeModeRaw = $0.rawValue }
+                                ),
+                                label: { $0.title })
+        }
     }
 
     // MARK: 缓存
@@ -928,4 +932,75 @@ struct BackupCenterView: View {
         message = "已恢复：收藏 \(payload.favorites.count) 首 · 歌单 \(payload.playlists.count) 个"
         ToastCenter.shared.show("备份已恢复")
     }
+}
+
+// MARK: - 设置选项弹层
+
+/// 设置项的通用单选弹层：标题 + 选项列表 + 当前项勾选。
+/// 用 Button 触发的 sheet，而不是 Menu，避免菜单收起后在原位置留下长方形高亮。
+struct SettingsOptionSheet<Item: Hashable>: View {
+    let title: String
+    let options: [Item]
+    @Binding var selection: Item
+    let label: (Item) -> String
+    var detail: ((Item) -> String)? = nil
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        BeansNavigationStack {
+            List {
+                ForEach(options, id: \.self) { option in
+                    Button {
+                        BeansHaptics.select()
+                        selection = option
+                        dismiss()
+                    } label: {
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(label(option))
+                                    .font(BeansFont.appFont(15, .medium))
+                                    .foregroundStyle(Color.beansLabel)
+                                if let detail {
+                                    Text(detail(option))
+                                        .font(BeansFont.appFont(11))
+                                        .foregroundStyle(Color.beansComment)
+                                }
+                            }
+                            Spacer(minLength: 8)
+                            if option == selection {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 17, weight: .semibold))
+                                    .foregroundStyle(Color.beansAmber)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .beansScrollContentBackgroundHidden()
+            .background { GlassBackdrop() }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                        .tint(Color.beansAmber)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
+    }
+}
+
+/// 设置页里会弹选项弹层的四个入口
+private enum SettingsPickerKind: String, Identifiable {
+    case playbackQuality
+    case downloadQuality
+    case uiStyle
+    case themeMode
+
+    var id: String { rawValue }
 }
