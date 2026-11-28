@@ -110,7 +110,13 @@ final class PlayerManager: NSObject, ObservableObject {
     private var failureAutoSkipWorkItem: DispatchWorkItem?
     private var playbackConfirmationWorkItem: DispatchWorkItem?
     private var playbackStallWorkItem: DispatchWorkItem?
-    private static let nowPlayingArtworkCache = NSCache<NSString, UIImage>()
+    /// 锁屏封面缓存：每张 600px 封面解码后约 1.4MB，必须设上限，否则滑过几百首会把内存吃满。
+    private static let nowPlayingArtworkCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 12
+        cache.totalCostLimit = 24 * 1024 * 1024
+        return cache
+    }()
 
     private let historyKey = "beans.history"
     private let countsKey = "beans.playcounts"
@@ -1045,7 +1051,8 @@ final class PlayerManager: NSObject, ObservableObject {
         let key = song.identityKey as NSString
         if let cached = nowPlayingArtworkCache.object(forKey: key) { return cached }
         let image = CoverArt.uiImage(seed: song.coverSeed, size: 600)
-        nowPlayingArtworkCache.setObject(image, forKey: key)
+        let cost = Int(image.size.width * image.size.height * image.scale * image.scale * 4)
+        nowPlayingArtworkCache.setObject(image, forKey: key, cost: max(1, cost))
         return image
     }
 

@@ -236,6 +236,8 @@ struct ProfileView: View {
                                title: "界面风格",
                                value: theme.uiStyle.title)
                 }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
                 rowDivider
                 Menu {
                     ForEach(BeansThemeMode.allCases) { mode in
@@ -255,6 +257,8 @@ struct ProfileView: View {
                                title: "深浅模式",
                                value: currentThemeMode.title)
                 }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
             }
 
             settingsGroup(title: "其他") {
@@ -369,6 +373,9 @@ struct ProfileView: View {
         } label: {
             settingRow(icon: icon, tint: tint, title: title, value: value)
         }
+        // Menu 默认会给 label 套一层系统按钮外观，点击时出现长方形高亮，这里关掉
+        .menuStyle(.button)
+        .buttonStyle(.plain)
     }
 
     // MARK: 缓存
@@ -764,7 +771,7 @@ struct AppearanceSettingsView: View {
         let selected = currentWallpaperPath == path
         return ZStack {
             Color.beansGlassFill
-            if let image = BeansImageFileCache.image(at: path) {
+            if let image = BeansImageFileCache.thumbnail(at: path, maxPixelSize: 180) {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
@@ -855,7 +862,7 @@ struct BackupCenterView: View {
         ZStack {
             GlassBackdrop()
             VStack(spacing: 14) {
-                Text("把收藏、歌单、最近播放与设置导出为 JSON；换机或重装后导入即可恢复。")
+                Text("把收藏、歌单与最近播放导出为 JSON；换机或重装后导入即可恢复。")
                     .font(BeansFont.appFont(13))
                     .foregroundStyle(Color.beansComment)
                     .multilineTextAlignment(.center)

@@ -102,29 +102,6 @@ enum BeansThemeMode: String, CaseIterable, Identifiable {
     }
 }
 
-// MARK: - 壁纸外观目标
-
-enum BeansWallpaperAppearance: String, CaseIterable, Identifiable {
-    case light
-    case dark
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .light: return beansLocalized("浅色模式", "Light Mode")
-        case .dark: return beansLocalized("深色模式", "Dark Mode")
-        }
-    }
-
-    var colorScheme: ColorScheme {
-        switch self {
-        case .light: return .light
-        case .dark: return .dark
-        }
-    }
-}
-
 // MARK: - 配色主题（多套配色，可在「我的 → 外观」中切换；全局统一生效）
 
 enum BeansAccent: String, CaseIterable, Identifiable {
@@ -441,24 +418,6 @@ final class ThemeStore: ObservableObject {
         invalidateBackgroundCache()
     }
 
-    /// 配置备份恢复后调用：按 UserDefaults 中的壁纸列表与 base64 备份重建壁纸文件
-    func reloadWallpapersFromBackup() {
-        wallpapersRestored = true
-        restoreWallpapers()
-    }
-
-    /// 导出配置备份前调用：把当前壁纸文件内容补进 UserDefaults，避免只备份到旧沙盒路径。
-    func refreshWallpaperBackupForExport() {
-        var backup = UserDefaults.standard.dictionary(forKey: wallpaperDataKey) as? [String: String] ?? [:]
-        let candidates = ([backgroundImagePathLight, backgroundImagePathDark] + wallpaperPaths).filter { !$0.isEmpty }
-        for path in candidates {
-            guard FileManager.default.fileExists(atPath: path),
-                  let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { continue }
-            backup[path] = data.base64EncodedString()
-        }
-        UserDefaults.standard.set(backup, forKey: wallpaperDataKey)
-    }
-
     func setUIStyle(_ style: BeansUIStyle) {
         guard uiStyle != style else { return }
         uiStyle = style
@@ -645,34 +604,6 @@ final class ThemeStore: ObservableObject {
         invalidateBackgroundCache()
     }
 
-    /// 重置设置时清空整套壁纸库与当前背景。
-    func clearAllWallpapers() {
-        for path in wallpaperPaths {
-            try? FileManager.default.removeItem(atPath: path)
-            BeansImageFileCache.remove(path)
-        }
-        for path in Set([backgroundImagePathLight, backgroundImagePathDark].filter { !$0.isEmpty }) {
-            try? FileManager.default.removeItem(atPath: path)
-            BeansImageFileCache.remove(path)
-        }
-        wallpaperPaths = []
-        backgroundImagePathLight = ""
-        backgroundImagePathDark = ""
-        backgroundHexLight = ""
-        backgroundHexDark = ""
-        UserDefaults.standard.removeObject(forKey: wallpaperListKey)
-        UserDefaults.standard.removeObject(forKey: wallpaperDataKey)
-        UserDefaults.standard.removeObject(forKey: deletedKey)
-        UserDefaults.standard.set("", forKey: backgroundImageKey)
-        UserDefaults.standard.set("", forKey: backgroundImageLightKey)
-        UserDefaults.standard.set("", forKey: backgroundImageDarkKey)
-        UserDefaults.standard.set("", forKey: backgroundKey)
-        UserDefaults.standard.set("", forKey: backgroundLightKey)
-        UserDefaults.standard.set("", forKey: backgroundDarkKey)
-        invalidateBackgroundCache()
-        BeansImageFileCache.removeAll()
-    }
-
     private func effectiveBackgroundHex(for colorScheme: ColorScheme) -> String {
         let primary = colorScheme == .dark ? backgroundHexDark : backgroundHexLight
         if !primary.isEmpty { return primary }
@@ -747,11 +678,27 @@ final class ThemeStore: ObservableObject {
         UserDefaults.standard.set(wallpaperPaths, forKey: wallpaperListKey)
     }
 
-    /// base64 备份（UserDefaults 持久化）：覆盖安装导致文件丢失时可自动重建
+    /// base64 备份（UserDefaults 持久化）：覆盖安装导致文件丢失时可自动重建。
+    /// 只保留当前使用的和最近几张，避免设置文件被大图撑到几 MB。
     private func saveWallpaperBackup(_ path: String, data: Data) {
         var backup = UserDefaults.standard.dictionary(forKey: wallpaperDataKey) as? [String: String] ?? [:]
         backup[path] = data.base64EncodedString()
+        backup = trimmedWallpaperBackup(backup)
         UserDefaults.standard.set(backup, forKey: wallpaperDataKey)
+    }
+
+    /// 备份保留策略：浅色/深色当前壁纸必留，其余按壁纸库倒序（新→旧）补到 8 张。
+    private func trimmedWallpaperBackup(_ backup: [String: String]) -> [String: String] {
+        let limit = 8
+        guard backup.count > limit else { return backup }
+        var kept: [String: String] = [:]
+        for path in [backgroundImagePathLight, backgroundImagePathDark] where !path.isEmpty {
+            if let value = backup[path] { kept[path] = value }
+        }
+        for path in wallpaperPaths.reversed() where kept.count < limit {
+            if let value = backup[path] { kept[path] = value }
+        }
+        return kept
     }
 
     private func removeWallpaperBackup(_ path: String) {
